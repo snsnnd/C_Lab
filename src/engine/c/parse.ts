@@ -312,6 +312,10 @@ export class Parser {
     const body = node.childForFieldName('body');
     const key = `${tag} ${name}`;
     if (!body) {
+      // Self reference: struct Node * next inside struct Node's own body must
+      // resolve to the record being built, not to a second empty forward type.
+      const building = this.recordsBeingBuilt.get(key);
+      if (building) return building;
       const existing = this.tags.get(key);
       if (existing) return existing;
       const forward: Type = { kind: 'record', name, tag, fields: [], complete: false };
