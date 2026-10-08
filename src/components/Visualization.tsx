@@ -77,7 +77,7 @@ function EmptyState({ ready }: { ready: boolean }) {
 }
 
 function StateTable({ snapshot }: { snapshot: Snapshot }) {
-  return <div className="state-table-wrap">{snapshot.control && <p className="table-control" data-testid="control-flow"><GitBranch size={16} /> {snapshot.control.result}</p>}<table className="state-table"><caption>当前停点的变量状态</caption><thead><tr><th>变量</th><th>类型</th><th>值</th><th>函数</th></tr></thead><tbody>{snapshot.variables.map(v => <tr key={v.id} className={snapshot.changes.includes(v.id) ? 'changed-row' : ''}><td><code>{v.name}</code></td><td><code>{v.type}</code></td><td><code>{v.enumName ?? v.value}</code>{v.fields?.length ? <ul className="field-list">{v.fields.map(f => <li key={f.name}><code>{f.name}</code> = <code>{f.value}</code> <span className="field-offset">+{f.offset}</span></li>)}</ul> : null}</td><td>{v.frame}</td></tr>)}</tbody></table>{!snapshot.variables.length && <p className="quiet">当前停点尚无已声明的变量。</p>}</div>;
+  return <div className="state-table-wrap">{snapshot.control && <p className="table-control" data-testid="control-flow"><GitBranch size={16} /> {snapshot.control.result}</p>}<table className="state-table"><caption>当前停点的变量状态</caption><thead><tr><th>变量</th><th>类型</th><th>值</th><th>函数</th></tr></thead><tbody>{snapshot.variables.map(v => <tr key={v.id} className={snapshot.changes.includes(v.id) ? 'changed-row' : ''}><td><code>{v.name}</code></td><td><code>{v.type}</code></td><td><code>{v.enumName ?? v.value}</code>{v.fields?.length ? <ul className="field-list">{v.fields.map(f => <li key={f.name}><code>{f.name}</code> = <code>{f.value}</code> <span className="field-offset">+{f.offset}</span></li>)}</ul> : null}</td><td>{v.frame}</td></tr>)}</tbody></table>{snapshot.returned && <p className="table-return"><GitBranch size={14} /> {snapshot.returned.name}() 返回 {snapshot.returned.value}</p>}{!snapshot.variables.length && <p className="quiet">当前停点尚无已声明的变量。</p>}</div>;
 }
 
 function Diagram({ snapshot, previous, platform }: { snapshot: Snapshot; previous?: Snapshot; platform?: string }) {
@@ -85,6 +85,22 @@ function Diagram({ snapshot, previous, platform }: { snapshot: Snapshot; previou
   const records = snapshot.variables.filter(v => v.kind === 'struct');
   const scalars = snapshot.variables.filter(v => v.kind === 'scalar' || v.kind === 'enum');
   const pointers = snapshot.variables.filter(v => v.kind === 'pointer' || v.kind === 'heap');
+  const frameOrder = snapshot.frames.map(f => f.name);
+  const frameGroups: { label: string; items: typeof scalars }[] = [];
+  for (const variable of scalars) {
+    const label = variable.frame || '其他';
+    let group = frameGroups.find(item => item.label === label);
+    if (!group) { group = { label, items: [] }; frameGroups.push(group); }
+    group.items.push(variable);
+  }
+  frameGroups.sort((a, b) => {
+    const ia = frameOrder.indexOf(a.label);
+    const ib = frameOrder.indexOf(b.label);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.label.startsWith('全局') ? 1 : b.label.startsWith('全局') ? -1 : 0;
+  });
   const cursor = scalars.find(v => ['i', 'index', 'j'].includes(v.name) && /^\d+$/.test(v.value));
   const diagram = useRef<HTMLDivElement>(null);
   // Keep the array and the object that changed this step inside the visible area.
@@ -126,8 +142,9 @@ function Diagram({ snapshot, previous, platform }: { snapshot: Snapshot; previou
       return <div className="pointer-row" key={pointer.id}><div className={`pointer-box ${pointer.freed ? 'is-freed' : ''}`}><code>{pointer.type}</code><strong>{pointer.name}</strong></div><div className="pointer-link"><span>{pointer.value === '空指针 NULL' ? '不指向' : '指向'}</span><svg viewBox="0 0 120 32" aria-hidden="true"><path d="M 2 16 H 110 M 102 9 L 111 16 L 102 23" /></svg></div><div className={`pointer-target ${target && snapshot.changes.includes(target.id) ? 'is-changed' : ''}`}><code>{pointer.targetName ?? pointer.value}</code><strong>{target ? (target.enumName ?? target.value) : '—'}</strong></div>{pointer.targetLabel && <p className="pointer-note">{pointer.targetLabel}</p>}</div>;
     })}</section>}
     {records.length > 0 && <section className="records-section" aria-label="结构体"><div className="section-label"><BracketsSquare size={18} /><span>结构体</span><span className="section-end"><span className="change-dot" />本步变化的字段会高亮</span></div><div className="records-grid">{records.map(variable => <RecordBox key={variable.id} variable={variable} changed={snapshot.changes.includes(variable.id)} />)}</div></section>}
-    {scalars.length > 0 && <section className="variables-section"><div className="section-label"><Cube size={18} /><span>变量</span><span className="section-end"><span className="change-dot" />本步变化</span></div><div className="variables-grid">{scalars.map(variable => <ValueBox key={variable.id} variable={variable} previous={previous?.variables.find(v => v.id === variable.id)} changed={snapshot.changes.includes(variable.id)} />)}</div></section>}
+    {scalars.length > 0 && <section className="variables-section"><div className="section-label"><Cube size={18} /><span>变量</span><span className="section-end"><span className="change-dot" />本步变化 · 按函数分组</span></div>{frameGroups.map(group => <div className="frame-group" key={group.label}><div className="frame-group-label"><Stack size={13} /><code>{group.label}</code></div><div className="variables-grid">{group.items.map(variable => <ValueBox key={variable.id} variable={variable} previous={previous?.variables.find(v => v.id === variable.id)} changed={snapshot.changes.includes(variable.id)} />)}</div></div>)}</section>}
     {snapshot.frames.length > 1 && <section className="frames-section" aria-label="函数调用"><div className="section-label"><Stack size={18} /><span>函数调用</span><span className="section-end">当前活动调用</span></div><div className="frame-list">{snapshot.frames.map((frame, i) => <div className="frame-entry" key={frame.id}>{i > 0 && <ArrowRight size={16} />}<span className={i === snapshot.frames.length - 1 ? 'current-frame' : ''}><span className="frame-depth">{i + 1}</span><code>{frame.name}()</code></span></div>)}</div></section>}
+    {snapshot.returned && <div className="return-badge" role="status" aria-label="函数返回值"><ArrowRight size={14} /><code>{snapshot.returned.name}()</code><span>返回</span><code className="return-value">{snapshot.returned.value}</code></div>}
     {!snapshot.variables.length && <div className="no-variables"><Cube size={28} weight="light" /><p>尚无局部变量</p><span>继续下一步，或在下方查看程序输出。</span></div>}
     <div className="diagram-footnote">由本次真实执行生成 · 方框与箭头是教学表示{platform ? ` · ${platform}` : ''}</div>
   </div>;

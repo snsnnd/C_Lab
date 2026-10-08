@@ -56,6 +56,8 @@ export interface Snapshot {
   description: string;
   /** Present on steps produced by a control-flow decision. */
   control?: ControlState;
+  /** Present on the stop where a function returned a value. */
+  returned?: { name: string; value: string };
 }
 
 export interface Trace {

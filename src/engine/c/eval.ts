@@ -56,7 +56,7 @@ export type StepEvent =
       iteration?: number;
     }
   | { type: 'call'; frame: CallFrame }
-  | { type: 'return'; frame: CallFrame }
+  | { type: 'return'; frame: CallFrame; value?: string }
   | { type: 'allocate'; address: number; size: number; label: string }
   | { type: 'free'; address: number; label: string }
   | { type: 'done'; exitCode: number };
@@ -803,7 +803,7 @@ export class Interpreter {
       });
 
       const flow = yield* this.execBlock(body, depth + 1);
-      yield { type: 'return', frame };
+      yield { type: 'return', frame, value: returnType.kind === 'void' || flow?.signal !== 'return' || flow.value === undefined || isAggregateValue(flow.value) ? undefined : String(flow.value.value) };
       if (returnType.kind === 'void') return { type: VOID, value: 0 };
       if (flow?.signal !== 'return' || flow.value === undefined) return { type: returnType, value: 0 };
       return flow.value;

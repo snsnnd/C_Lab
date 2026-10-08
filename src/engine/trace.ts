@@ -205,8 +205,9 @@ export async function runTraceAsync(source: string, input = '', files?: SourceFi
           previous.description = `进入 ${frame.name}()，观察这次调用的参数与局部变量。`;
         }
       }
-      if (event.type === 'return' && previous && !files) {
-        previous.description = `${event.frame.functionName}() 已返回，局部变量随之结束作用域。`;
+      if (event.type === 'return' && previous) {
+        if (event.value) previous.returned = { name: event.frame.functionName, value: event.value };
+        if (!files) previous.description = `${event.frame.functionName}() 已返回${event.value ? `，返回值 ${event.value}` : '，局部变量随之结束作用域。'}`;
       }
     }
     trace.output = interp.outputText;
