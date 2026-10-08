@@ -1,0 +1,99 @@
+C Lab · C 语言可视化实验室（离线网页版）
+========================================
+
+这个文件夹里是完整的网页应用。所有代码执行都在访问者自己的浏览器里完成，
+不需要安装任何东西，也不需要联网，更不会把代码上传到任何服务器。
+
+【怎么打开】
+
+Windows：双击「启动-Windows.bat」，浏览器会自动打开 http://localhost:8000
+Linux / macOS：双击或在终端运行「start-linux-mac.sh」，然后访问 http://localhost:8000
+
+说明：不能直接双击 index.html。浏览器出于安全限制，禁止网页从本地文件
+加载 WebAssembly 与工作线程，必须通过一个本地小服务器访问。上面的启动脚本
+就是用系统自带的 Python 或 Node.js 启动这样一个只读的小服务器（仅本机可访问），
+全程不需要联网。
+
+如果电脑上没有 Python 3 也没有 Node.js，请任选其一安装后再运行启动脚本；
+也可以用任意静态服务器（nginx、Apache、VS Code 的 Live Server 等）直接托管本文件夹。
+
+如果文件夹放在网络共享（\\server\...）或 WSL 的路径（\\wsl.localhost\...）里，
+脚本会自动映射后再运行；但直接放在本地磁盘（如 D:\C-Lab）速度更快，推荐复制过去再使用。
+
+【课堂同步：老师操作，学生屏幕跟随】
+
+需要 Node.js（任意 LTS 版本即可）：
+
+Windows：双击「课堂同步-Windows.bat」
+Linux / macOS：运行「classroom-sync-linux-mac.sh」
+
+窗口里会打印学生地址（首选/备用）：老师用 localhost 打开页面，学生用首选地址
+打开浏览器（同一局域网即可，学生不需要安装任何东西）。如果电脑装了 Docker
+或虚拟机，它们的虚拟网卡会被自动隐藏，不会干扰选择。
+
+端口被占用时服务会自动改用 8001、8002…… 并打印实际使用的新端口，分享链接
+也会自动带上新端口，按窗口里显示的地址发给学生即可。WSL 的镜像网络有时会让
+Windows 无法绑定之前用过的端口，如果 Windows 上总是提示占用，直接在 WSL 里
+运行 `npm run serve`（或 classroom-sync-linux-mac.sh）更省事，学生同样能访问。
+
+注意两点：
+
+- 教师机自己请用 localhost 打开；局域网 IP 在教师机本机可能连不上，
+  这是 WSL 镜像网络的正常现象，学生设备不受影响。
+- 学生打不开时依次检查：学生与教师机在同一个 Wi-Fi / 局域网（不是访客网络、
+  不是手机流量）；关掉路由器的「AP 隔离」；系统防火墙放行该端口。
+  WSL 的 NAT 模式还需在 Windows 上做端口转发（netsh interface portproxy
+  add v4tov4 listenport=8000 listenaddress=0.0.0.0 connectport=8000
+  connectaddress=<WSL 的 IP>）。
+
+1. 老师点右上角「课堂同步」→「开始共享」，得到 6 位课堂码与链接
+   （链接会自动使用局域网地址，直接发给学生即可）。
+2. 学生打开链接（或输入课堂码）加入，页面进入只读跟随模式：
+   课程、全部源码、标准输入与播放步骤都会随老师实时更新。
+   加入前本机保存的代码会自动备份。
+3. 学生点「退出跟随」恢复自由编辑，并自动恢复自己加入前的代码；
+   即使上课中途关掉页面，下次打开也会恢复备份。
+4. 老师点「停止共享」结束整堂课。
+
+课堂服务只在这台电脑和局域网内传递状态（课程、代码、播放位置），不保存任何数据，
+关掉窗口即结束。SSE 通道是单向推送，几十人同时跟随没有压力。
+
+如果通过 nginx 等反向代理对外提供服务，需要为 /api/events 关闭代理缓冲：
+
+    location /api/events { proxy_pass http://127.0.0.1:8000; proxy_buffering off; proxy_read_timeout 1h; }
+
+【部署到服务器给多人使用】
+
+把本文件夹的全部内容（index.html 与 assets/）复制到服务器的静态目录即可，
+例如 nginx：
+
+    server {
+        listen 80;
+        server_name 你的域名;
+        root /var/www/c-lab;
+        index index.html;
+
+        # 让 .wasm 以正确类型返回（较老的 nginx 需要这一行）
+        types { application/wasm wasm; }
+
+        # 页面入口不缓存，刷新立即拿到新版本
+        location = /index.html { add_header Cache-Control "no-cache"; }
+        # 带哈希文件名的资源可以长期缓存
+        location /assets/ { add_header Cache-Control "public, max-age=31536000, immutable"; }
+    }
+
+多人同时访问没有问题：网页是纯静态的，程序在每个人的浏览器里独立运行，
+服务器只负责发送文件，没有计算压力和并发上限。纯静态部署不包含课堂同步接口；
+需要课堂同步时用上面的课堂服务，或把 server/ 目录一起部署并由 Node 运行。
+
+【更新版本】
+
+把新的 index.html 与 assets/ 覆盖上去即可。因为入口不缓存、资源文件名带哈希，
+访问者刷新页面就会拿到新版本。已经打开的页面不会自动跳转刷新。
+
+【数据说明】
+
+代码、输入与学习进度只保存在访问者自己的浏览器 localStorage 中；
+换电脑或清理浏览器数据后需要重新导入之前导出的源码。
+
+详细文档与源码见项目仓库：/home/aaa/lession
