@@ -113,7 +113,7 @@ export interface Program {
   /** Translation-unit ownership for the linker and runtime name lookup. */
   units?: Map<Declaration, string>;
   /** Declarations in source order, used to report struct layout and enum values. */
-  tags: { kind: 'struct' | 'enum'; name: string; type: Type; line: number }[];
+  tags: { kind: 'struct' | 'union' | 'enum'; name: string; type: Type; line: number }[];
 }
 
 /* ---------- Context ---------- */
@@ -182,10 +182,11 @@ export class Parser {
         else if (item.kind === 'VarDecl') decls.push(item);
         else if (item.kind === 'TypeDecl') decls.push(item);
       }
-      if (child.type === 'struct_specifier' || child.type === 'enum_specifier') {
+      if (child.type === 'struct_specifier' || child.type === 'union_specifier' || child.type === 'enum_specifier') {
         const tagName = child.childForFieldName('name')?.text ?? '';
-        const type = this.tags.get(`${child.type === 'struct_specifier' ? 'struct' : 'enum'} ${tagName}`);
-        if (type) tags.push({ kind: child.type === 'struct_specifier' ? 'struct' : 'enum', name: tagName, type, line: this.lineOfOffset(child.startIndex) });
+        const tagKind = child.type === 'struct_specifier' ? 'struct' : child.type === 'union_specifier' ? 'union' : 'enum';
+        const type = this.tags.get(`${tagKind} ${tagName}`);
+        if (type) tags.push({ kind: tagKind, name: tagName, type, line: this.lineOfOffset(child.startIndex) });
       }
     }
     return { decls, tags };

@@ -72,7 +72,7 @@ export interface Trace {
   exitCode?: number;
   duration: number;
   /** Layout facts the UI can show for struct lessons. */
-  layouts?: { name: string; kind: 'struct' | 'enum'; size: number; align: number; fields: { name: string; type: string; offset: number; size: number }[]; constants?: { name: string; value: number }[] }[];
+  layouts?: { name: string; kind: 'struct' | 'union' | 'enum'; size: number; align: number; fields: { name: string; type: string; offset: number; size: number }[]; constants?: { name: string; value: number }[] }[];
   /** What the engine can and cannot do, so the UI never overclaims. */
   platform: { bits: 64; pointerSize: 8; endian: 'little'; label: string };
   heap?: { address: number; size: number; label: string; freed: boolean }[];

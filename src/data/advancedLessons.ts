@@ -78,4 +78,14 @@ export const advancedLessons: Lesson[] = [
     challenge: '写 tail_insert 函数按插入顺序接尾（走到 next 为 NULL 的节点再接）；再写 int length(Node *head) 统计节点数。',
     code: '#include <stdio.h>\n#include <stdlib.h>\n\ntypedef struct Node {\n    int value;\n    struct Node *next;\n} Node;\n\nint main(void) {\n    Node *head = NULL;\n    int values[] = {30, 20, 10};\n    for (int i = 0; i < 3; i++) {\n        Node *node = malloc(sizeof(Node));\n        if (node == NULL) return 1;\n        node->value = values[i];\n        node->next = head;\n        head = node;\n    }\n    for (Node *p = head; p != NULL; p = p->next) {\n        printf("%d ", p->value);\n    }\n    printf("\\n");\n    while (head != NULL) {\n        Node *next = head->next;\n        free(head);\n        head = next;\n    }\n    return 0;\n}\n', input: '', expected: '10 20 30 \n',
   },
+  {
+    id: 'unions', number: '27', title: '联合体', subtitle: '所有成员共享同一段内存', group: '语法进阶', time: '25 分钟', tags: ['union', '内存布局', '别名'],
+    intro: '联合体和结构体写法几乎一样，语义完全不同：所有成员从同一个地址开始，写一个就覆盖另一个。面板里的偏移量会直接告诉你这件事。',
+    concepts: [{ title: '共享同一段内存', text: 'union Data 的 i、f、str 都在 +0：写入 data.f 会覆盖 data.i 的字节。大小等于最大成员（str[20] → 20 字节），对齐取成员中最大的。' }, { title: '读另一个成员 = 字节重解释', text: '写完 data.f 再读 data.i 不是错误，而是把同样的 4 个字节按 int 重新解释——这正是观察字节序和内存表示的窗口。' }],
+    prediction: 'data.i = 10 之后写 data.f = 220.5，再读 data.i 是多少？', answer: '1130135552。220.5 的 float32 位型是 0x43570000，小端字节为 00 00 57 43，被当作 int 重读就是这个值。',
+    pitfalls: ['以为各成员像结构体一样各占各的：写一个成员，其他成员的旧值就没了。', '同时使用两个成员得到的是「字节重解释」，程序不会报错，但要清楚自己在读什么。', 'strcpy 写入超过 str[20] 会越界，破坏联合体之外的内存。'],
+    deeper: [{ title: '与结构体对照记忆', text: '把本课的 union 改成 struct 再运行：偏移量立刻变成 +0/+4/+8，大小变成 28。面板的偏移量列就是两种布局的全部区别。' }, { title: '真实用途', text: '寄存器映射（同一地址既是整数又是位字段）、节省内存的变体类型、网络协议的字节重解释。标准库或硬件编程里随处可见。' }],
+    challenge: '用 strcpy 写入 "AB"，再读 data.i：按 ASCII 算出这两个字节的整数值，运行验证小端字节序。',
+    code: '#include <stdio.h>\n#include <string.h>\n\nunion Data\n{\n   int i;\n   float f;\n   char  str[20];\n};\n\nint main( )\n{\n   union Data data;\n\n   printf("sizeof = %d\\n", (int)sizeof(union Data));\n   data.i = 10;\n   printf("data.i : %d\\n", data.i);\n   data.f = 220.5;\n   printf("data.f : %f\\n", data.f);\n   printf("data.i : %d\\n", data.i);\n   strcpy(data.str, "C Programming");\n   printf("data.str : %s\\n", data.str);\n   return 0;\n}\n', input: '', expected: 'sizeof = 20\ndata.i : 10\ndata.f : 220.500000\ndata.i : 1130135552\ndata.str : C Programming\n',
+  },
 ];

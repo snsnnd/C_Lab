@@ -2,7 +2,7 @@
 
 **左侧写代码，右侧看变化。** 面向大一新生的 C 语言教学工作台：代码在浏览器里真实解释执行，右侧用变量盒、数组格、指针箭头和调用层展示每一步发生了什么。
 
-当前共 **26 节课程：14 节 C 基础课 + 4 节架构模块课 + 4 节常用进阶课 + 1 个综合系统 + 3 节语法进阶（递归 / 二维数组 / 链表）**。支持宏、条件编译、多文件编辑与链接、跨文件回放，最终章是可运行的学生成绩管理系统。
+当前共 **27 节课程：14 节 C 基础课 + 4 节架构模块课 + 4 节常用进阶课 + 1 个综合系统 + 4 节语法进阶（递归 / 二维数组 / 链表 / 联合体）**。支持宏、条件编译、多文件编辑与链接、跨文件回放，最终章是可运行的学生成绩管理系统。
 
 ## 快速开始
 
@@ -129,7 +129,7 @@ npm run serve       # 默认 0.0.0.0:8000，会打印本机与局域网地址
 
 ### 已验证支持
 
-变量与表达式、`if/else`、`switch`、`for/while/do`、`break/continue`、普通函数与递归、一维与二维数组、字符串、指针与指针算术、**结构体与结构体数组**、**结构体指针与 `->`**、**枚举**、**typedef**、**函数指针与回调**、结构体按值赋值、**静态局部变量**、位运算与 `bool`、定宽整数、`malloc/calloc/free`，以及 `printf`、`puts`、`putchar`、`scanf`、`sscanf`、`fgets`、`strlen`、`strcmp`、`strcpy`、`strcat`、`strncpy`、`strchr`、`strstr`、`memcpy`、`memmove`、`memset`、`memcmp`、`sprintf`、`snprintf`、`atoi`、`atof`、`rand`、`srand`、`qsort`、`sqrt`、`pow`、`fabs`、`floor`、`ceil`、`round`、`sin`、`cos`、`tan`、`log`、`exp`、`fmod`、`abs`、`exit`。`sizeof` 可作用于类型与数组，数组长度支持整数常量表达式，数组形参自动调整为指针（int a[] 即 int *）。
+变量与表达式、`if/else`、`switch`、`for/while/do`、`break/continue`、普通函数与递归、一维与二维数组、字符串、指针与指针算术、**结构体与结构体数组**、**结构体指针与 `->`**、**联合体（成员共享 +0，与 GCC 对照）**、**枚举**、**typedef**、**函数指针与回调**、结构体按值赋值、**静态局部变量**、位运算与 `bool`、定宽整数、`malloc/calloc/free`，以及 `printf`、`puts`、`putchar`、`scanf`、`sscanf`、`fgets`、`strlen`、`strcmp`、`strcpy`、`strcat`、`strncpy`、`strchr`、`strstr`、`memcpy`、`memmove`、`memset`、`memcmp`、`sprintf`、`snprintf`、`atoi`、`atof`、`rand`、`srand`、`qsort`、`sqrt`、`pow`、`fabs`、`floor`、`ceil`、`round`、`sin`、`cos`、`tan`、`log`、`exp`、`fmod`、`abs`、`exit`。`sizeof` 可作用于类型与数组，数组长度支持整数常量表达式，数组形参自动调整为指针（int a[] 即 int *）。
 
 **尚未支持**：`#line`、GNU 专用宏扩展、子目录与完整构建系统、位域、变长数组、线程，以及完整的文件 I/O 行为。标准库是教学子集，不等同于完整 C17 编译器；整数在 JavaScript 安全整数范围内讲解。
 

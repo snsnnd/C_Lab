@@ -287,6 +287,17 @@ function describeLayouts(program: Program): Trace['layouts'] {
       });
       continue;
     }
+    if (tag.kind === 'union' && tag.type.kind === 'record') {
+      const laid = layoutRecord(tag.type);
+      layouts.push({
+        name: tag.name || '匿名联合体',
+        kind: 'union',
+        size: laid.size,
+        align: alignOf(tag.type),
+        fields: laid.fields.map(field => ({ name: field.name, type: typeName(field.type), offset: field.offset, size: sizeOf(field.type) })),
+      });
+      continue;
+    }
     if (tag.type.kind === 'enum') {
       layouts.push({
         name: tag.name || '匿名枚举',

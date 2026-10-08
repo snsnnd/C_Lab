@@ -115,7 +115,8 @@ export function layoutRecord(t: RecordType): { fields: Field[]; size: number } {
   for (const field of t.fields) {
     const alignment = alignOf(field.type);
     if (alignment > 1) offset = Math.ceil(offset / alignment) * alignment;
-    fields.push({ ...field, offset });
+    // C unions overlay every member at offset 0; only structs lay fields out in sequence.
+    fields.push({ ...field, offset: t.tag === 'union' ? 0 : offset });
     offset += sizeOf(field.type);
   }
   const structAlign = Math.max(1, ...t.fields.map(f => alignOf(f.type)));

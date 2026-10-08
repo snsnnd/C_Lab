@@ -250,6 +250,17 @@ function renderFloat(value: number, spec: Spec): string {
   if (spec.conversion === 'g' || spec.conversion === 'G') {
     return String(Number(value.toPrecision(Math.max(1, precision))));
   }
+  if (!Number.isFinite(value)) {
+    // C spells these inf / nan, not Infinity / NaN.
+    return pad(Number.isNaN(value) ? 'nan' : value > 0 ? 'inf' : '-inf', spec);
+  }
+  if (Math.abs(value) >= 1e21) {
+    // Number#toFixed switches to exponential notation past 1e21; C's %f never does.
+    // Every double that large is an exact integer, so BigInt prints it exactly.
+    const digits = BigInt(Math.abs(value)).toString();
+    const body = precision > 0 ? `${digits}.${'0'.repeat(precision)}` : digits;
+    return pad((value < 0 ? '-' : '') + body, spec);
+  }
   return pad(value.toFixed(Math.max(0, precision)), spec);
 }
 
