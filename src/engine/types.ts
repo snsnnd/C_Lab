@@ -71,6 +71,9 @@ export interface Trace {
   snapshots: Snapshot[];
   output: string;
   status: 'completed' | 'error' | 'limited';
+  /** Sliding-buffer bookkeeping: steps recorded in total vs steps scrolled out. */
+  droppedSnapshots?: number;
+  totalSnapshots?: number;
   error?: string;
   errorLine?: number;
   exitCode?: number;

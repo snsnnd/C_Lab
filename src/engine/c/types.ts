@@ -183,7 +183,12 @@ export function wrapInteger(value: number, t: Type): number {
   if (!isIntLike(base)) return value;
   if (base.boolean) return value === 0 ? 0 : 1;
   const { bits, signed } = base;
-  if (bits >= 64) return signed ? value : value >>> 0;
+  if (bits >= 64) {
+    // C wraps unsigned 64-bit at 2^64. JS doubles lose precision past 2^53, so
+    // exact wrap uses BigInt; values that large already carry a documented loss.
+    if (signed) return value;
+    return Number(BigInt.asUintN(64, BigInt(Math.trunc(value))));
+  }
   const span = 2 ** bits;
   const wrapped = ((value % span) + span) % span;
   if (signed) {

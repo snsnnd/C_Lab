@@ -144,6 +144,18 @@ export async function runTraceAsync(source: string, input = '', files?: SourceFi
     let snapshots = 0;
     let operations = 0;
     let previous: Snapshot | undefined;
+    // Sliding buffer: keep recording for the whole run, but retain only the most
+    // recent MAX_SNAPSHOTS stops so long programs stay bounded and watchable.
+    const record = (snapshot: Snapshot | undefined): void => {
+      if (!snapshot) return;
+      if (trace.snapshots.length >= MAX_SNAPSHOTS) {
+        trace.snapshots.shift();
+        trace.droppedSnapshots = (trace.droppedSnapshots ?? 0) + 1;
+      }
+      trace.snapshots.push(snapshot);
+      previous = snapshot;
+      snapshots++;
+    };
     const iterator = interp.run();
     for (;;) {
       if (++operations > MAX_OPERATIONS) {
@@ -155,25 +167,11 @@ export async function runTraceAsync(source: string, input = '', files?: SourceFi
       if (next.done) break;
       const event = next.value as StepEvent;
       if (event.type === 'statement') {
-        if (snapshots >= MAX_SNAPSHOTS) {
-          trace.status = 'limited';
-          trace.error = `轨迹达到 ${MAX_SNAPSHOTS} 步上限，后续步骤未记录。`;
-          break;
-        }
         const snapshot = snapshotOf(interp, event.line, trace.output, previous, { force: event.force, description: event.description });
-        if (snapshot) {
-          trace.snapshots.push(snapshot);
-          previous = snapshot;
-          snapshots++;
-        }
+        record(snapshot);
         continue;
       }
       if (event.type === 'branch') {
-        if (snapshots >= MAX_SNAPSHOTS) {
-          trace.status = 'limited';
-          trace.error = `轨迹达到 ${MAX_SNAPSHOTS} 步上限，后续步骤未记录。`;
-          break;
-        }
         const control: ControlState = {
           construct: event.construct,
           line: event.line,
@@ -183,12 +181,7 @@ export async function runTraceAsync(source: string, input = '', files?: SourceFi
         };
         const last = trace.snapshots[trace.snapshots.length - 1];
         if (last && last.control && sameControl(last.control, control)) continue;
-        const snapshot = snapshotOf(interp, event.line, trace.output, previous, { control });
-        if (snapshot) {
-          trace.snapshots.push(snapshot);
-          previous = snapshot;
-          snapshots++;
-        }
+        record(snapshotOf(interp, event.line, trace.output, previous, { control }));
         continue;
       }
       if (event.type === 'done') {
@@ -210,6 +203,7 @@ export async function runTraceAsync(source: string, input = '', files?: SourceFi
         if (!files) previous.description = `${event.frame.functionName}() 已返回${event.value ? `，返回值 ${event.value}` : '，局部变量随之结束作用域。'}`;
       }
     }
+    trace.totalSnapshots = snapshots;
     trace.output = interp.outputText;
     if (trace.status === 'completed') {
       const last = trace.snapshots.at(-1);

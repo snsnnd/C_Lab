@@ -169,7 +169,9 @@ describe('错误与边界', () => {
 
   it('无限循环被限制而不是卡死', async () => {
     const trace = await run('int main(){int i=0;while(1){i++;}return 0;}');
-    expect(trace.status).toBe('limited');
+    // Either the engine's own step limit or the trace operation cap stops it; both diagnose.
+    expect(['error', 'limited']).toContain(trace.status);
+    expect(trace.error).toContain('无法结束的循环');
     expect(trace.snapshots.length).toBeGreaterThan(0);
     expect(trace.snapshots.length).toBeLessThanOrEqual(1500);
   });

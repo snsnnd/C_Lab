@@ -69,7 +69,10 @@ export function CodeEditor({ value, onChange, line, dark, large, readOnly = fals
           EditorView.theme({
             '&': { height: '100%', backgroundColor: 'var(--surface)' },
             '.cm-scroller': { fontFamily: 'var(--mono)', fontSize: large ? '22px' : '16px', lineHeight: '1.75' },
-            '.cm-content': { padding: '16px 0 40px', caretColor: 'var(--accent)' },
+            '.cm-content': { padding: '16px 0 40px', caretColor: 'var(--ink)' },
+            // CodeMirror's base theme draws the caret black; follow the theme ink
+            // so it stays white on the dark background.
+            '.cm-cursor': { borderLeftColor: 'var(--ink)' },
             '.cm-line': { paddingLeft: '10px' },
             '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--muted)', border: 'none', minWidth: '42px' },
             '.cm-activeLine': { backgroundColor: 'transparent' },
