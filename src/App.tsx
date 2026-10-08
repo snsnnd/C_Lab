@@ -10,6 +10,7 @@ import { Visualization } from './components/Visualization';
 import { FadeContent } from './components/FadeContent';
 import { ShortcutHelp } from './components/ShortcutHelp';
 import { ProjectFiles } from './components/ProjectFiles';
+import { FloatingCode } from './components/FloatingCode';
 import { validateFiles } from './engine/project';
 import { isTypingTarget, matchShortcut } from './lib/shortcuts';
 import { clearDraftBackup, joinUrl, joinUrlOn, keepDraftBackup, loadDraftBackup, normalizeRoom, ROOM_PATTERN, type StepMessage, type WorkspaceMessage } from './lib/classroom';
@@ -385,6 +386,7 @@ export default function App() {
               <Visualization snapshot={snapshot} previous={snapshots[step - 1]} table={visualTable} ready={!!runner.trace} platform={runner.trace?.platform?.label} />
             </div>
             <div className="step-explanation" aria-live={playing ? 'off' : 'polite'}><span className="step-icon"><Lightbulb size={19} /></span><div><span className="explanation-label">{snapshot ? '这一步，发生了什么' : '观察提示'}</span><p>{snapshot?.description ?? '先预测结果，再运行代码。每一步都可以暂停、回看。'}</p></div></div>
+            {maxPane === 'visual' && <FloatingCode files={files} file={editorFile} onSelect={file => { setPlaying(false); setActiveFile(file); }} line={!stale && snapshot && (snapshot.file ?? 'main.c') === editorFile ? snapshot.line : 0} dark={dark} />}
             {maxPane === 'visual' && <div className="fullscreen-transport" aria-label="全屏播放控制">
               <button className="text-button" disabled={!playable || step === 0} onClick={() => jump(step - 1)}>上一步</button>
               <button className="text-button" disabled={!playable} onClick={() => { if (last) setStep(0); setPlaying(!playing); }}>{playing ? '暂停播放' : '播放执行过程'}</button>
