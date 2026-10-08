@@ -128,13 +128,31 @@ function Diagram({ snapshot, previous, platform }: { snapshot: Snapshot; previou
       const old = previous?.variables.find(v => v.id === array.id);
       const cursorIndex = cursor ? Number(cursor.value) : -1;
       const inRange = cursorIndex >= 0 && cursorIndex < (array.elements?.length ?? 0);
+      const shape = array.shape;
+      const columns = shape?.length === 2 ? shape[1] : 0;
+      const rows = columns ? Math.min(shape![0], Math.floor(64 / columns)) : 0;
+      const cellClass = (flat: number) => `array-item ${!columns && inRange && flat === cursorIndex ? 'is-indexed' : ''} ${old?.elements?.[flat] !== undefined && old.elements[flat] !== array.elements?.[flat] ? 'is-changed' : ''}`;
       return <section className="array-section" key={array.id} aria-label={`数组 ${array.name}`}>
-        <div className="section-label"><BracketsSquare size={18} /><code>{array.name}</code><span>{array.type}</span><span className="section-end">{array.length} 个元素</span></div>
-        <div className="array-scroll"><div className="array-track">
+        <div className="section-label"><BracketsSquare size={18} /><code>{array.name}</code><span>{array.type}</span><span className="section-end">{columns ? `形状 ${shape![0]} × ${columns}` : `${array.length} 个元素`}</span></div>
+        {columns ? <div className="array-grid" aria-label={`${array.name} 的行列网格`}>
+          <div className="array-grid-row array-grid-head"><span className="array-row-label" />{Array.from({ length: columns }, (_, c) => <code key={c} className="array-col-head">[{c}]</code>)}</div>
+          {Array.from({ length: rows }, (_, r) => <div className="array-grid-row" key={r}>
+            <code className="array-row-label">{r}</code>
+            {Array.from({ length: columns }, (_, c) => {
+              const flat = r * columns + c;
+              const value = array.elements?.[flat];
+              return <div className={cellClass(flat)} key={c}><div className="array-cell"><span key={value ?? ''}>{value}</span></div><code className="array-index">[{r}][{c}]</code></div>;
+            })}
+          </div>)}
+        </div>
+        : <div className="array-scroll"><div className="array-track">
           {inRange && cursor && <div className="array-cursor" style={{ transform: `translateX(calc(${cursorIndex} * (var(--cell-size) + 8px)))` }}><code>{cursor.name} = {cursor.value}</code><ArrowDown size={18} weight="bold" /></div>}
-          <div className="array-cells">{array.elements?.map((value, i) => <div className={`array-item ${inRange && i === cursorIndex ? 'is-indexed' : ''} ${old?.elements?.[i] !== undefined && old.elements[i] !== value ? 'is-changed' : ''}`} key={i}><div className="array-cell"><span key={value}>{value}</span></div><code className="array-index">[{i}]</code></div>)}</div>
-        </div></div>
-        <div className="array-note">{cursor ? <><CursorClick size={14} />{cursor.name} = {cursor.value} · 索引变量参考{!inRange && '，当前不在已显示元素范围内'}</> : <><span className="mini-square" />每格一个元素，下方是从 0 开始的索引</>}{(array.length ?? 0) > 64 && <span>仅显示前 64 项</span>}</div>
+          <div className="array-cells">{array.elements?.map((value, i) => <div className={cellClass(i)} key={i}><div className="array-cell"><span key={value}>{value}</span></div><code className="array-index">[{i}]</code></div>)}</div>
+        </div></div>}
+        <div className="array-note">{columns
+          ? <><span className="mini-square" />行主序：每行 {columns} 个元素在内存里连续存放，按 a[行][列] 访问</>
+          : <>{cursor ? <><CursorClick size={14} />{cursor.name} = {cursor.value} · 索引变量参考{!inRange && '，当前不在已显示元素范围内'}</> : <><span className="mini-square" />每格一个元素，下方是从 0 开始的索引</>}</>}
+          {(array.length ?? 0) > 64 && <span>仅显示前 64 项</span>}</div>
       </section>;
     })}
     {pointers.length > 0 && <section className="pointer-section" aria-label="指向关系"><div className="section-label"><ArrowRight size={18} /><span>指向关系</span><span className="section-end">逻辑对象，不是机器地址</span></div>{pointers.map(pointer => {

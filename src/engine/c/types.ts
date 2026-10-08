@@ -164,7 +164,13 @@ export function typeName(t: Type): string {
     case 'int': return t.boolean ? '_Bool' : `${t.signed ? '' : 'unsigned '}${t.bits === 8 ? 'char' : t.bits === 16 ? 'short' : t.bits === 64 ? 'long' : 'int'}`;
     case 'float': return t.bits === 32 ? 'float' : 'double';
     case 'pointer': return `${typeName(t.to)}*`;
-    case 'array': return `${typeName(t.of)}[${t.count}]`;
+    case 'array': {
+      // Declaration order: int a[2][3] reads int[2][3], not the reversed suffix chain.
+      const dims: number[] = [];
+      let level: Type = t;
+      while (level.kind === 'array') { dims.push(level.count); level = level.of; }
+      return `${typeName(level)}${dims.map(count => `[${count}]`).join('')}`;
+    }
     case 'record': return `${t.tag} ${t.name}`.trim();
     case 'enum': return `enum ${t.name}`;
     case 'function': return `${typeName(t.ret)}(${t.params.map(p => typeName(p.type)).join(', ') || 'void'})`;

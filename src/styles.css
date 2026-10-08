@@ -515,3 +515,10 @@ h1 { font-size: 26px; line-height: 1.3; font-weight: 650; letter-spacing: -.6px;
 .return-badge { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--blue-fill); color: var(--ink); font-size: 12px; }
 .return-badge .return-value { color: var(--accent); font-weight: 600; }
 .table-return { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+
+.array-grid { display: inline-flex; flex-direction: column; gap: 6px; padding: 4px 2px; }
+.array-grid-row { display: flex; align-items: center; gap: 8px; }
+.array-grid-head { align-items: flex-end; }
+.array-row-label { width: 22px; text-align: right; color: var(--muted); font: 12px var(--mono); flex-shrink: 0; }
+.array-col-head { width: var(--cell-size); text-align: center; color: var(--muted); font: 12px var(--mono); }
+.array-grid .array-item { width: var(--cell-size); }

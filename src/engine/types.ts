@@ -16,6 +16,8 @@ export interface Variable {
   value: string;
   elements?: string[];
   length?: number;
+  /** Multi-dimensional shape in row-major order (e.g. [2, 3]); absent for one-dimensional arrays. */
+  shape?: number[];
   target?: string;
   targetName?: string;
   /** Present for pointers and heap objects. */

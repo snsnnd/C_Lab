@@ -425,12 +425,24 @@ function describeBinding(interp: Interpreter, binding: Binding, previous?: Snaps
   }
   if (isArray(binding.type)) {
     const type: ArrayType = binding.type;
+    // Multi-dimensional arrays keep their shape so the UI can draw rows and columns.
+    const shape: number[] = [];
+    for (let level: Type = type; level.kind === 'array'; level = level.of) shape.push(level.count);
+    const total = shape.reduce((product, count) => product * count, 1);
     const elements: string[] = [];
-    for (let index = 0; index < Math.min(type.count, MAX_ARRAY_CELLS); index++) {
-      elements.push(scalarText(interp, binding.address + index * sizeOf(type.of), type.of));
-    }
-    const display = `[${elements.join(', ')}${type.count > MAX_ARRAY_CELLS ? ', …' : ''}]`;
-    return { ...base, kind: 'array', value: display, elements, length: type.count };
+    // Flatten nested arrays in row-major order so a[2][3] shows six scalars, not row blobs.
+    const collect = (address: number, level: ArrayType): void => {
+      const inner = level.of;
+      const count = Math.min(level.count, Math.max(0, MAX_ARRAY_CELLS - elements.length));
+      if (isArray(inner)) {
+        for (let index = 0; index < count; index++) collect(address + index * sizeOf(inner), inner);
+      } else {
+        for (let index = 0; index < count; index++) elements.push(scalarText(interp, address + index * sizeOf(inner), inner));
+      }
+    };
+    collect(binding.address, type);
+    const display = `[${elements.join(', ')}${total > elements.length ? ', …' : ''}]`;
+    return { ...base, kind: 'array', value: display, elements, length: type.count, shape: shape.length > 1 ? shape : undefined };
   }
   if (isPointer(binding.type)) {
     const pointerType: PointerType = binding.type;
