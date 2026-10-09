@@ -116,12 +116,15 @@ export class Memory {
     const { bits, signed } = base;
     const size = bits / 8;
     this.assertRange(address, size);
+    if (bits === 64) {
+      // Doubles cannot hold every 64-bit pattern (negative long long accumulates
+      // past 2^53): rebuild through BigInt, then surface within the documented
+      // safe-integer teaching range.
+      const raw = new DataView(this.bytes.buffer, address, 8).getBigInt64(0, true);
+      return Number(signed ? raw : BigInt.asUintN(64, raw));
+    }
     let value = 0;
     for (let i = size - 1; i >= 0; i--) value = value * 256 + this.bytes[address + i];
-    if (bits === 64) {
-      if (!signed) return value;
-      return value >= 2 ** 63 ? value - 2 ** 64 : value;
-    }
     return signed ? wrapInteger(value, base) : value;
   }
 
