@@ -103,6 +103,24 @@ export function joinUrlOn(href: string, room: string, host: string, port?: numbe
   return url.toString();
 }
 
+export interface ClassroomInfo {
+  port?: number;
+  addresses?: string[];
+  publicOrigin?: string;
+}
+
+/** Prefer an explicitly configured public origin over container/LAN interfaces. */
+export function classroomShareLinks(href: string, room: string, info?: ClassroomInfo | null): string[] {
+  if (!room) return [];
+  if (info?.publicOrigin) return [joinUrl(info.publicOrigin, room)];
+  const own = joinUrl(href, room);
+  const onLocalhost = ['localhost', '127.0.0.1', '[::1]', '::1', ''].includes(new URL(href).hostname);
+  const addresses = Array.isArray(info?.addresses) ? info.addresses : [];
+  const lan = addresses.map(address => joinUrlOn(href, room, address, info?.port));
+  const ordered = onLocalhost ? lan : [own, ...lan];
+  return [...new Set(ordered.length ? ordered : [own])];
+}
+
 function isFileMap(value: unknown): value is Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);

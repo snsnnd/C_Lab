@@ -84,6 +84,17 @@ test('teacher shares and students follow lesson, code, steps and read-only mode'
   expect(errors).toEqual([]);
 });
 
+test('uses the configured public origin for the displayed classroom link', async ({ page }) => {
+  await page.route('**/api/info', route => route.fulfill({
+    json: { port: 8000, addresses: [], publicOrigin: 'https://clab.example.com:8443' },
+  }));
+  await page.goto(BASE + '/');
+  await page.getByRole('button', { name: '课堂同步' }).click();
+  await page.getByTestId('start-share').click();
+  const room = await page.getByTestId('room-code').textContent();
+  await expect(page.getByTestId('join-link')).toHaveText(`https://clab.example.com:8443/?join=${room}`);
+});
+
 test('joining a classroom backs up local drafts, and leaving or reopening restores them', async ({ browser }) => {
   test.setTimeout(90000);
   const teacher = await browser.newPage();

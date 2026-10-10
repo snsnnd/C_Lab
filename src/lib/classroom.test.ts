@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clearDraftBackup, joinUrl, joinUrlOn, keepDraftBackup, loadDraftBackup, makeHostKey, makeRoom, normalizeRoom, parseServerMessage, ROOM_PATTERN, type StorageLike } from './classroom';
+import { classroomShareLinks, clearDraftBackup, joinUrl, joinUrlOn, keepDraftBackup, loadDraftBackup, makeHostKey, makeRoom, normalizeRoom, parseServerMessage, ROOM_PATTERN, type StorageLike } from './classroom';
 
 describe('classroom protocol', () => {
   it('generates six-slot rooms without confusing characters and 32-char keys', () => {
@@ -28,6 +28,24 @@ describe('classroom protocol', () => {
   it('rebuilds the link at a LAN address for student devices', () => {
     expect(joinUrlOn('http://localhost:8000/?x=1#y', 'ABCDEF', '192.168.1.3', 8000)).toBe('http://192.168.1.3:8000/?x=1&join=ABCDEF');
     expect(joinUrlOn('http://localhost:8000/', 'ABCDEF', '10.0.0.7')).toBe('http://10.0.0.7:8000/?join=ABCDEF');
+  });
+
+  it('prefers the public origin, including external scheme and port', () => {
+    expect(classroomShareLinks('http://localhost:8000/?join=OLD#x', 'ABCDEF', {
+      publicOrigin: 'https://clab.example.com:8443', port: 8000, addresses: ['172.17.0.2'],
+    })).toEqual(['https://clab.example.com:8443/?join=ABCDEF']);
+    expect(classroomShareLinks('http://localhost:8000/', '', { publicOrigin: 'https://clab.example.com' })).toEqual([]);
+  });
+
+  it('preserves native LAN links and uses the browser URL when discovery is disabled', () => {
+    expect(classroomShareLinks('http://localhost:8000/', 'ABCDEF', { port: 8000, addresses: ['192.168.1.3'] }))
+      .toEqual(['http://192.168.1.3:8000/?join=ABCDEF']);
+    expect(classroomShareLinks('http://[::1]:8000/', 'ABCDEF', { port: 8000, addresses: ['192.168.1.3'] }))
+      .toEqual(['http://192.168.1.3:8000/?join=ABCDEF']);
+    expect(classroomShareLinks('http://192.168.1.3:9000/', 'ABCDEF', { port: 8000, addresses: [] }))
+      .toEqual(['http://192.168.1.3:9000/?join=ABCDEF']);
+    expect(classroomShareLinks('https://clab.example.com/', 'ABCDEF', null))
+      .toEqual(['https://clab.example.com/?join=ABCDEF']);
   });
 
   it('keeps the first draft backup until it is cleared', () => {

@@ -41,7 +41,19 @@ function json(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
-export function createSyncServer({ root, logger = console } = {}) {
+function normalizePublicOrigin(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error('PUBLIC_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment');
+  }
+}
+
+export function createSyncServer({ root, logger = console, publicOrigin = '', discoverLan = true } = {}) {
+  const origin = normalizePublicOrigin(publicOrigin);
   const staticRoot = resolve(root ?? defaultRoot());
   let listeningPort = 0;
   const rooms = new Map();
@@ -140,6 +152,13 @@ export function createSyncServer({ root, logger = console } = {}) {
     let url;
     try { url = new URL(req.url, 'http://localhost'); }
     catch { return json(res, 400, { error: 'bad url' }); }
+    if (url.pathname === '/api/health') {
+      const index = join(staticRoot, 'index.html');
+      let ok = false;
+      try { ok = statSync(index).isFile(); } catch { /* build missing */ }
+      res.setHeader('cache-control', 'no-store');
+      return json(res, ok ? 200 : 503, { ok });
+    }
     if (url.pathname === '/api/events') return handleEvents(req, res, url);
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'c-lab' });
     if (url.pathname === '/api/publish') {
@@ -151,9 +170,13 @@ export function createSyncServer({ root, logger = console } = {}) {
       return json(res, 200, { exists: !!room?.key, viewers: room ? viewerCount(room) : 0 });
     }
     if (url.pathname === '/api/info') {
-      // The share link is built from the teacher's own address, which is often
-      // localhost; hand the browser the LAN addresses so students get a usable link.
-      return json(res, 200, { port: listeningPort, addresses: lanAddresses().map(item => item.address) });
+      // Container interface addresses and internal ports are not student-facing.
+      res.setHeader('cache-control', 'no-store');
+      return json(res, 200, {
+        port: listeningPort,
+        publicOrigin: origin,
+        addresses: discoverLan && !origin ? lanAddresses().map(item => item.address) : [],
+      });
     }
     if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
     return serveFile(res, url.pathname);
@@ -210,17 +233,28 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const basePort = Number(process.env.PORT || 8000);
   const host = process.env.HOST || '0.0.0.0';
-  const instance = createSyncServer({ root: process.env.STATIC_ROOT });
+  const discoverLan = process.env.DISCOVER_LAN !== '0';
+  let publicOrigin;
+  let instance;
+  try {
+    publicOrigin = normalizePublicOrigin(process.env.PUBLIC_ORIGIN);
+    instance = createSyncServer({ root: process.env.STATIC_ROOT, publicOrigin, discoverLan });
+  } catch (error) {
+    console.error(`无法启动服务：${error.message}`);
+    process.exit(1);
+  }
   const start = (port, attempts) => instance.listen(port, host).then(actual => {
     console.log('C Lab 课堂服务已启动');
     if (actual !== basePort) console.log(`  （端口 ${basePort} 被系统或其他程序占用，已自动改用 ${actual}）`);
-    console.log(`  教师打开：http://localhost:${actual}`);
-    const addresses = lanAddresses();
+    console.log(`  教师打开：${publicOrigin || `http://localhost:${actual}`}`);
+    const addresses = discoverLan && !publicOrigin ? lanAddresses() : [];
     addresses.slice(0, 2).forEach((item, index) => {
       console.log(`  学生打开${index === 0 ? '（首选）' : '（备用）'}：http://${item.address}:${actual}`);
     });
     if (addresses.length > 2) console.log(`  其余 ${addresses.length - 2} 个是虚拟网卡，学生用不上，已隐藏。`);
-    if (!addresses.length) console.log('  未检测到局域网地址，请检查网络连接。');
+    if (publicOrigin) console.log(`  学生访问：${publicOrigin}`);
+    else if (!discoverLan) console.log('  容器部署：请使用宿主机地址和映射端口访问；可设置 PUBLIC_ORIGIN 生成学生加入链接。');
+    else if (!addresses.length) console.log('  未检测到局域网地址，请检查网络连接。');
     console.log('  学生打不开时：确认在同一网络，并让系统防火墙放行本端口。');
     console.log('  点击右上角「课堂同步」开始共享；按 Ctrl+C 停止。');
   }).catch(error => {
@@ -242,5 +276,20 @@ if (isMain) {
     process.exit(1);
   });
   start(basePort, 20);
-  process.on('SIGINT', () => instance.close().then(() => process.exit(0)));
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    const deadline = setTimeout(() => process.exit(1), 10_000);
+    deadline.unref();
+    instance.close().then(() => {
+      clearTimeout(deadline);
+      process.exit(0);
+    }).catch(error => {
+      console.error(`关闭服务失败：${error.message}`);
+      process.exit(1);
+    });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

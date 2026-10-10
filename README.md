@@ -42,6 +42,23 @@ location /assets/     { add_header Cache-Control "public, max-age=31536000, immu
 
 多人同时访问没有并发压力：网页是纯静态的，每个访问者在自己的浏览器里独立执行代码，互不影响，服务器只发送文件。更新版本时覆盖文件，访问者刷新页面即可生效；已经打开的页面不会自动刷新。
 
+## Docker 部署（含课堂同步）
+
+安装 Docker 和 Compose v2 后，在仓库根目录运行，无需在宿主机安装 Node.js：
+
+```bash
+docker compose up -d --build --wait
+```
+
+本机打开 `http://localhost:8000`；课堂使用时老师和学生都应通过 `http://<宿主机局域网IP>:8000` 访问。可复制 `.env.example` 为 `.env`，配置宿主机端口 `HTTP_PORT` 和学生可访问的 `PUBLIC_ORIGIN`（例如 `https://clab.example.com`）。镜像禁用容器网卡地址发现，避免生成学生无法访问的加入链接。
+
+- 单容器提供前端、WASM 和 SSE 同步，不需要数据库或持久化卷。
+- 以非 root 用户运行，带健康检查和 SIGTERM 优雅关闭。
+- 房间状态在内存中，重启会丢失；不要直接扩展为多个副本。
+- 公网部署请配 HTTPS、访问控制，并关闭 SSE 代理缓冲。
+
+完整配置、反向代理、更新和测试说明见 [Docker 部署](docs/10-docker-deployment.md)。
+
 ## 课堂同步（老师操作，学生跟随）
 
 仓库自带一个零依赖的 Node 同步服务（`server/serve.mjs`，静态托管 + SSE 推送）：
@@ -159,5 +176,6 @@ npm run serve       # 默认 0.0.0.0:8000，会打印本机与局域网地址
 | [开源调研](docs/07-open-source-review.md) | 候选项目核实与取舍 |
 | [美术与动画规范](docs/08-art-and-animation.md) | 配色、版式、图元、动效标准 |
 | [逐课动画分镜](docs/09-animation-storyboards.md) | 每课画面与验收条件 |
+| [Docker 部署](docs/10-docker-deployment.md) | 容器构建、课堂链接、HTTPS 与运行维护 |
 
 历史方案（自研 GCC/GDB 采集链路）保留在 [docs/archive/](docs/archive/)，仅作未来扩展参考。

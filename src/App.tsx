@@ -13,7 +13,7 @@ import { ProjectFiles } from './components/ProjectFiles';
 import { FloatingCode } from './components/FloatingCode';
 import { validateFiles } from './engine/project';
 import { isTypingTarget, matchShortcut } from './lib/shortcuts';
-import { clearDraftBackup, joinUrl, joinUrlOn, keepDraftBackup, loadDraftBackup, normalizeRoom, ROOM_PATTERN, type StepMessage, type WorkspaceMessage } from './lib/classroom';
+import { classroomShareLinks, clearDraftBackup, joinUrl, keepDraftBackup, loadDraftBackup, normalizeRoom, ROOM_PATTERN, type ClassroomInfo, type StepMessage, type WorkspaceMessage } from './lib/classroom';
 import { lessons, type Lesson } from './data/lessons';
 import { useRunner } from './hooks/useRunner';
 import { usePaneFullscreen } from './hooks/usePaneFullscreen';
@@ -64,7 +64,7 @@ export default function App() {
   const [joinCode, setJoinCode] = useState('');
   // Viewer joined a room but no workspace has arrived yet (teacher not sharing).
   const [awaitingWorkspace, setAwaitingWorkspace] = useState(false);
-  const [classroomInfo, setClassroomInfo] = useState<{ port?: number; addresses?: string[] } | null>(null);
+  const [classroomInfo, setClassroomInfo] = useState<ClassroomInfo | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<'lab' | 'notes'>('lab');
   const [visualTable, setVisualTable] = useState(false);
   const [mobileTab, setMobileTab] = useState<'code' | 'visual'>('code');
@@ -165,15 +165,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [classroom.role, classroom.publish, step, playing]);
 
-  const shareLinks = useMemo(() => {
-    if (!classroom.room) return [];
-    const own = joinUrl(location.href, classroom.room);
-    const onLocalhost = ['localhost', '127.0.0.1', '::1', ''].includes(location.hostname);
-    const addresses = Array.isArray(classroomInfo?.addresses) ? classroomInfo.addresses : [];
-    const lan = addresses.map(address => joinUrlOn(location.href, classroom.room, address, classroomInfo?.port));
-    const ordered = onLocalhost ? lan : [own, ...lan];
-    return [...new Set(ordered.length ? ordered : [own])];
-  }, [classroom.room, classroomInfo]);
+  const shareLinks = useMemo(
+    () => classroomShareLinks(location.href, classroom.room, classroomInfo),
+    [classroom.room, classroomInfo],
+  );
 
   useEffect(() => {
     const requested = new URLSearchParams(location.search).get('join');
@@ -195,8 +190,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // The teacher usually opens localhost; ask the server for LAN addresses so
-    // the share link works on student devices.
+    // Ask for the configured public origin (Docker/proxy) or native LAN addresses.
     if (classroom.role !== 'host') { setClassroomInfo(null); return; }
     let cancelled = false;
     fetch('/api/info').then(response => response.ok ? response.json() : null).then(info => {

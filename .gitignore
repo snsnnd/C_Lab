@@ -6,3 +6,8 @@ playwright-report/
 *.local
 .DS_Store
 release/
+# Deployment handoffs contain databases and credentials; never commit them.
+resource/kc-handoff-*.tar.gz
+.env
+.env.*
+!.env.example

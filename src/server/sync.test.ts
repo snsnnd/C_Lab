@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
@@ -6,6 +6,7 @@ import { createSyncServer, type SyncServer } from '../../server/serve.mjs';
 
 let instance: SyncServer;
 let base = '';
+let root = '';
 
 async function subscribe(path: string, signal: AbortSignal) {
   const response = await fetch(base + path, { signal });
@@ -45,18 +46,25 @@ const publish = (room: string, key: string, message: unknown) => fetch(base + '/
 });
 
 beforeAll(async () => {
-  const root = mkdtempSync(join(tmpdir(), 'c-lab-sync-'));
+  root = mkdtempSync(join(tmpdir(), 'c-lab-sync-'));
   writeFileSync(join(root, 'index.html'), '<!doctype html><title>lab</title>');
+  writeFileSync(join(root, 'test.wasm'), Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
   instance = createSyncServer({ root });
   base = `http://127.0.0.1:${await instance.listen(0, '127.0.0.1')}`;
 });
 
-afterAll(async () => { await instance?.close(); });
+afterAll(async () => {
+  await instance?.close();
+  rmSync(root, { recursive: true, force: true });
+});
 
 it('serves the static app with wasm-friendly MIME configuration', async () => {
   const response = await fetch(base + '/');
   expect(response.status).toBe(200);
   expect(await response.text()).toContain('lab');
+  const wasm = await fetch(base + '/test.wasm');
+  expect(wasm.headers.get('content-type')).toBe('application/wasm');
+  expect((await wasm.arrayBuffer()).byteLength).toBe(8);
   expect(await fetch(base + '/../etc/passwd').then(r => r.status)).toBe(404);
 });
 
@@ -68,10 +76,59 @@ it('reports its port and LAN addresses for building share links', async () => {
   for (const address of info.addresses) expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
 });
 
-it('reports a healthy service status', async () => {
+it('provides an uncached readiness endpoint', async () => {
   const response = await fetch(base + '/api/health');
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ ok: true, service: 'c-lab' });
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(await response.json()).toEqual({ ok: true });
+});
+
+it('reports not ready when the static build is missing', async () => {
+  const server = createSyncServer({ root: join(root, 'missing'), discoverLan: false });
+  try {
+    const port = await server.listen(0, '127.0.0.1');
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ ok: false });
+  } finally { await server.close(); }
+});
+
+it.each([
+  ['https://clab.example.com/', true, 'https://clab.example.com'],
+  ['http://192.168.1.10:9000', false, 'http://192.168.1.10:9000'],
+  ['', false, ''],
+] as const)('uses container-safe info for origin %s and discovery %s', async (publicOrigin, discoverLan, expected) => {
+  const server = createSyncServer({ root, publicOrigin, discoverLan });
+  try {
+    const port = await server.listen(0, '127.0.0.1');
+    const response = await fetch(`http://127.0.0.1:${port}/api/info`);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ port, publicOrigin: expected, addresses: [] });
+  } finally { await server.close(); }
+});
+
+it.each([
+  'not-a-url', 'ftp://example.com', 'https://user:pass@example.com',
+  'https://example.com/lab', 'https://example.com/?a=1', 'https://example.com/#x',
+])('rejects invalid public origin %s before starting the server', publicOrigin => {
+  expect(() => createSyncServer({ root, publicOrigin })).toThrow('PUBLIC_ORIGIN');
+});
+
+it('closes active SSE streams during shutdown', async () => {
+  const server = createSyncServer({ root });
+  const controller = new AbortController();
+  try {
+    const port = await server.listen(0, '127.0.0.1');
+    const response = await fetch(`http://127.0.0.1:${port}/api/events?room=ABC789`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    await reader.read();
+    const closing = server.close();
+    expect((await reader.read()).done).toBe(true);
+    await closing;
+  } finally {
+    controller.abort();
+    if (server.server.listening) await server.close();
+  }
 });
 
 it('relays workspace and step messages to viewers and replays them on late join', async () => {

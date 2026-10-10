@@ -6,5 +6,7 @@ export interface SyncServer {
 
 export function createSyncServer(options?: {
   root?: string;
+  publicOrigin?: string;
+  discoverLan?: boolean;
   logger?: { log(...args: unknown[]): void };
 }): SyncServer;
