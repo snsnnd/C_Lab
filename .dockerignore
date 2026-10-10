@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+dist
+release
+test-results
+playwright-report
+*.tsbuildinfo
+*.local
+docker-compose*.yml
+docs

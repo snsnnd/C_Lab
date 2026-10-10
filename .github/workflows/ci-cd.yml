@@ -1,0 +1,132 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build application
+        run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+  docker-build:
+    name: Docker build
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --pull --tag c-lab:${GITHUB_SHA} .
+
+  deploy:
+    name: Deploy over SSH
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/c-lab' }}
+      SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" > /dev/null
+
+      - name: Pack deployment context
+        run: |
+          tar \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude=dist \
+            --exclude=release \
+            --exclude=test-results \
+            --exclude=playwright-report \
+            --exclude='*.tsbuildinfo' \
+            -czf "$RUNNER_TEMP/c-lab-${GITHUB_SHA}.tgz" .
+
+      - name: Upload deployment context
+        run: |
+          scp \
+            -i "$HOME/.ssh/deploy_key" \
+            -P "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$RUNNER_TEMP/c-lab-${GITHUB_SHA}.tgz" \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/c-lab-${GITHUB_SHA}.tgz"
+
+      - name: Rebuild and restart on server
+        run: |
+          ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' ARCHIVE='/tmp/c-lab-${GITHUB_SHA}.tgz' bash -s" <<'REMOTE'
+          set -eu
+          case "$DEPLOY_PATH" in
+            /*) ;;
+            *) echo 'DEPLOY_PATH must be an absolute path' >&2; exit 1 ;;
+          esac
+          mkdir -p "$DEPLOY_PATH"
+          tar -xzf "$ARCHIVE" -C "$DEPLOY_PATH"
+          rm -f "$ARCHIVE"
+          cd "$DEPLOY_PATH"
+          docker compose up -d --build --remove-orphans
+          docker compose ps
+          docker compose exec -T nginx wget -qO- http://127.0.0.1/healthz >/dev/null
+          REMOTE

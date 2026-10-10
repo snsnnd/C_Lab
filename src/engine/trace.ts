@@ -512,7 +512,12 @@ function scalarText(interp: Interpreter, address: number, type: Type): string {
     if (value >= 32 && value < 127) return `'${String.fromCharCode(value)}'`;
     return String(value);
   }
-  return String(interp.memory.readValue(address, type).value);
+  const value = interp.memory.readValue(address, type).value;
+  if (type.kind === 'float' && type.bits === 32 && Number.isFinite(value)) {
+    // Keep float32's real storage semantics while hiding binary-noise tails in the teaching view.
+    return Number(value.toPrecision(7)).toString();
+  }
+  return String(value);
 }
 
 const bindingId = (binding: Binding): string => `${binding.name}@${binding.frame}@${binding.address.toString(16)}`;

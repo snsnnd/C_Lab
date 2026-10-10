@@ -155,6 +155,7 @@ npm run serve       # 默认 0.0.0.0:8000，会打印本机与局域网地址
 | [轻量数据协议](docs/04-data-contracts.md) | 快照、事件与课程数据 |
 | [环境与分发](docs/05-environment.md) | 环境检查结果与分发方式 |
 | [实施与验收](docs/06-roadmap.md) | 已完成项与后续计划 |
+| [CI/CD 与服务器部署](docs/10-cicd-deploy.md) | GitHub Actions、Docker、SSH、Compose、Nginx 与域名部署 |
 | [开源调研](docs/07-open-source-review.md) | 候选项目核实与取舍 |
 | [美术与动画规范](docs/08-art-and-animation.md) | 配色、版式、图元、动效标准 |
 | [逐课动画分镜](docs/09-animation-storyboards.md) | 每课画面与验收条件 |

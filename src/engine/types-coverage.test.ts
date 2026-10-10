@@ -47,5 +47,13 @@ it('every common variable type matches GCC', async () => {
     expect(trace.output).toBe(expected);
     expect(trace.output).toContain('f=3.14');
     expect(trace.output).toContain('half=1.6 cast=0');
+    const floatVariable = trace.snapshots
+      .flatMap(snapshot => snapshot.variables)
+      .find(variable => variable.name === 'f');
+    const doubleVariable = trace.snapshots
+      .flatMap(snapshot => snapshot.variables)
+      .find(variable => variable.name === 'd');
+    expect(floatVariable?.value).toBe('3.14');
+    expect(doubleVariable?.value).toBe('0.0025');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

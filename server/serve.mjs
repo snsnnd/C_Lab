@@ -141,6 +141,7 @@ export function createSyncServer({ root, logger = console } = {}) {
     try { url = new URL(req.url, 'http://localhost'); }
     catch { return json(res, 400, { error: 'bad url' }); }
     if (url.pathname === '/api/events') return handleEvents(req, res, url);
+    if (url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'c-lab' });
     if (url.pathname === '/api/publish') {
       if (req.method !== 'POST') return json(res, 405, { error: '仅支持 POST' });
       return handlePublish(req, res);

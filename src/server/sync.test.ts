@@ -68,6 +68,12 @@ it('reports its port and LAN addresses for building share links', async () => {
   for (const address of info.addresses) expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
 });
 
+it('reports a healthy service status', async () => {
+  const response = await fetch(base + '/api/health');
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true, service: 'c-lab' });
+});
+
 it('relays workspace and step messages to viewers and replays them on late join', async () => {
   expect(await (await fetch(base + '/api/room?room=ABC234')).json()).toEqual({ exists: false, viewers: 0 });
   const controller = new AbortController();
