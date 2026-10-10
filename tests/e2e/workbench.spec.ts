@@ -45,9 +45,13 @@ test('lessons, stdin, saved drafts, notes and error diagnostics', async ({ page 
   await page.getByRole('button', { name: '我能解释这个过程，标记学完' }).click();
   await expect(page.getByRole('button', { name: '已学完本课 · 点击撤销' })).toBeVisible();
   await page.getByRole('tab', { name: '代码实验' }).click();
-  await editCode(page, 'int main(){int x = ; return 0;}');
+  await editCode(page, 'int main(void) {\n  int value;\n  return value;\n}');
   await page.getByRole('button', { name: '运行代码', exact: false }).click();
   await expect(page.locator('.diagnostic.error')).toBeVisible();
+  await expect(page.getByTestId('jump-to-error')).toContainText('第 3 行');
+  await expect(page.locator('.cm-error-line')).toHaveCount(1);
+  await page.getByTestId('jump-to-error').click();
+  await expect(page.locator('.cm-error-line')).toBeVisible();
 });
 
 test('desktop, dark, mobile and presentation visual inspection', async ({ page }) => {

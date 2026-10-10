@@ -159,6 +159,11 @@ describe('错误与边界', () => {
     const trace = await run('int main(){int value;return value;}');
     expect(trace.status).toBe('error');
     expect(trace.error).toContain('未初始化');
+    expect(trace.errorLine).toBe(1);
+
+    const multiline = await run('int main(void) {\n  int value;\n  return value;\n}');
+    expect(multiline.status).toBe('error');
+    expect(multiline.errorLine).toBe(3);
   });
 
   it('malloc 内存不会错误地预清零', async () => {

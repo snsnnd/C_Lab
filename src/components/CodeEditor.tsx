@@ -9,6 +9,7 @@ import { Decoration, EditorView, drawSelection, highlightActiveLine, highlightAc
 
 // Highlight the interpreter's current stop. A line may hold several stops.
 const currentLine = StateEffect.define<number>();
+const errorLine = StateEffect.define<number>();
 const highlight = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(value, transaction) {
@@ -18,6 +19,21 @@ const highlight = StateField.define<DecorationSet>({
       const { doc } = transaction.state;
       value = effect.value > 0 && effect.value <= doc.lines
         ? Decoration.set([Decoration.line({ class: 'cm-execution-line' }).range(doc.line(effect.value).from)])
+        : Decoration.none;
+    }
+    return value;
+  },
+  provide: field => EditorView.decorations.from(field),
+});
+const errorHighlight = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    if (transaction.docChanged) value = Decoration.none;
+    for (const effect of transaction.effects) {
+      if (!effect.is(errorLine)) continue;
+      const { doc } = transaction.state;
+      value = effect.value > 0 && effect.value <= doc.lines
+        ? Decoration.set([Decoration.line({ class: 'cm-error-line' }).range(doc.line(effect.value).from)])
         : Decoration.none;
     }
     return value;
@@ -37,8 +53,8 @@ const lightHighlightStyle = HighlightStyle.define([
   { tag: tags.invalid, color: 'var(--red)' },
 ]);
 
-export function CodeEditor({ value, onChange, line, dark, large, readOnly = false }: {
-  value: string; onChange(value: string): void; line: number; dark: boolean; large: boolean; readOnly?: boolean;
+export function CodeEditor({ value, onChange, line, errorLine: invalidLine, dark, large, readOnly = false }: {
+  value: string; onChange(value: string): void; line: number; errorLine?: number; dark: boolean; large: boolean; readOnly?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -62,6 +78,7 @@ export function CodeEditor({ value, onChange, line, dark, large, readOnly = fals
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),
           highlight,
+          errorHighlight,
           EditorView.lineWrapping,
           EditorView.updateListener.of(update => {
             if (update.docChanged && !syncing.current) onChangeRef.current(update.state.doc.toString());
@@ -86,6 +103,7 @@ export function CodeEditor({ value, onChange, line, dark, large, readOnly = fals
     });
     view.current = view_;
     view_.dispatch({ effects: currentLine.of(line) });
+    view_.dispatch({ effects: errorLine.of(invalidLine ?? 0) });
     return () => { view_.destroy(); view.current = null; };
   // The editor is recreated on theme or read-only changes; other prop changes are applied below.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,10 +125,11 @@ export function CodeEditor({ value, onChange, line, dark, large, readOnly = fals
     const view_ = view.current;
     if (!view_) return;
     view_.dispatch({ effects: currentLine.of(line) });
+    view_.dispatch({ effects: errorLine.of(invalidLine ?? 0) });
     if (line > 0 && line <= view_.state.doc.lines) {
       view_.dispatch({ effects: EditorView.scrollIntoView(view_.state.doc.line(line).from, { y: 'nearest' }) });
     }
-  }, [line, value]);
+  }, [line, value, invalidLine]);
 
   return <div ref={host} className="editor-host" aria-label="C 代码编辑器" role="group" />;
 }

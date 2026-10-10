@@ -13,7 +13,7 @@ import {
   type Param, type Type,
 } from './types';
 import type { BinaryOp, Declaration, Expression, Initializer, Program, Statement } from './parse';
-import { callNative, isNative } from './stdlib';
+import { callNative, isNative, StdlibError } from './stdlib';
 
 export interface Binding {
   unit?: string;
@@ -501,7 +501,8 @@ export class Interpreter {
   private *eval(node: Expression, depth: number): Generator<StepEvent, Value, void> {
     this.steps++;
     if (this.steps > MAX_STEPS) throw new RuntimeError('执行步数超过上限，可能存在无法结束的循环', node.line);
-    switch (node.kind) {
+    try {
+      switch (node.kind) {
       case 'Num': return { type: node.type, value: coerceNumber(node.value, node.type) };
       case 'Char': return { type: INT, value: node.value };
       case 'Str': return { type: pointerTo(CHAR), value: this.internString(node.bytes) };
@@ -614,8 +615,16 @@ export class Interpreter {
       case 'SizeofExpr': {
         return { type: LONG, value: sizeOf(this.expressionType(node.operand, node.line)) };
       }
-      default:
-        throw new RuntimeError(`未处理的表达式 ${(node as Expression).kind}`, (node as Expression).line);
+        default:
+          throw new RuntimeError(`未处理的表达式 ${(node as Expression).kind}`, (node as Expression).line);
+      }
+    } catch (error) {
+      if (error instanceof RuntimeError || error instanceof ExitProgram || error instanceof StdlibError) {
+        if (error instanceof RuntimeError && !error.line) throw new RuntimeError(error.message, node.line);
+        throw error;
+      }
+      if (error instanceof Error) throw new RuntimeError(error.message, node.line);
+      throw error;
     }
   }
 
