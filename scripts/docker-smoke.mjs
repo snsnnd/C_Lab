@@ -6,7 +6,16 @@ import { fileURLToPath } from 'node:url';
 
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 const project = `c-lab-smoke-${randomUUID().slice(0, 8)}`;
-const env = { ...process.env, BIND_ADDRESS: '127.0.0.1', HTTP_PORT: '0', PUBLIC_ORIGIN: 'https://clab.example.com:8443' };
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== '--image' || !args[1])) {
+  throw new Error('Usage: node scripts/docker-smoke.mjs [--image EXISTING_IMAGE]');
+}
+const existingImage = args[1];
+const env = {
+  ...process.env, BIND_ADDRESS: '127.0.0.1', HTTP_PORT: '0',
+  PUBLIC_ORIGIN: 'https://clab.example.com:8443',
+  C_LAB_IMAGE: existingImage ?? `${project}:local`,
+};
 const composeArgs = ['compose', '-f', 'compose.yaml', '-p', project];
 const streams = [];
 
@@ -55,7 +64,7 @@ async function subscribe(base, room) {
 
 try {
   compose(['config', '--quiet']);
-  compose(['up', '-d', '--build', '--wait', '--wait-timeout', '90']);
+  compose(['up', '-d', ...(existingImage ? ['--no-build', '--pull', 'never'] : ['--build']), '--wait', '--wait-timeout', '90']);
   const address = compose(['port', 'c-lab', '8000'], true);
   const base = `http://${address}`;
   const id = compose(['ps', '-q', 'c-lab'], true);
@@ -124,6 +133,8 @@ try {
   try { compose(['logs', '--no-color', '--tail', '100']); } catch { /* preserve failure */ }
 } finally {
   for (const stream of streams) stream.abort();
-  try { compose(['down', '--rmi', 'local', '--remove-orphans'], false, 60_000); }
-  catch (error) { console.error(error); process.exitCode = 1; }
+  try {
+    compose(['down', '--remove-orphans'], false, 60_000);
+    if (!existingImage) docker(['image', 'rm', env.C_LAB_IMAGE]);
+  } catch (error) { console.error(error); process.exitCode = 1; }
 }

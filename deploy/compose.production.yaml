@@ -1,0 +1,29 @@
+# Image-only production stack. Always select this file and project explicitly.
+# /etc/c-lab/compose.env supplies PUBLIC_ORIGIN; image.env pins the image.
+services:
+  c-lab:
+    image: ${C_LAB_IMAGE:?Set C_LAB_IMAGE to a tested image digest}
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      STATIC_ROOT: /app/dist
+      DISCOVER_LAN: "0"
+      PUBLIC_ORIGIN: "${PUBLIC_ORIGIN:?Set the public HTTPS origin}"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    cpus: 2
+    mem_limit: 4g
+    memswap_limit: 8g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

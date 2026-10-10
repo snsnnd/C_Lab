@@ -1,4 +1,4 @@
-name: CI/CD
+name: Test and publish Docker image
 
 on:
   push:
@@ -9,21 +9,19 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: c-lab-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   validate:
     name: Test and build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -44,89 +42,86 @@ jobs:
         run: npm run test:e2e
 
   docker-build:
-    name: Docker build
+    name: Build, smoke-test and publish public image
     needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build image
-        run: docker build --pull --tag c-lab:${GITHUB_SHA} .
-
-  deploy:
-    name: Deploy over SSH
-    needs: docker-build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    # Serialize publication. An older rerun must not move main backwards.
+    concurrency:
+      group: c-lab-image-${{ github.ref }}
+      cancel-in-progress: false
     env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/c-lab' }}
-      SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      IMAGE_TAG: ghcr.io/snsnnd/c_lab:sha-${{ github.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Configure SSH
-        run: |
-          test -n "$DEPLOY_HOST"
-          test -n "$DEPLOY_USER"
-          test -n "$SSH_PRIVATE_KEY"
-          test -n "$SSH_KNOWN_HOSTS"
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
-          ssh-keygen -y -f "$HOME/.ssh/deploy_key" > /dev/null
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
 
-      - name: Pack deployment context
-        run: |
-          tar \
-            --exclude=.git \
-            --exclude=node_modules \
-            --exclude=dist \
-            --exclude=release \
-            --exclude=test-results \
-            --exclude=playwright-report \
-            --exclude='*.tsbuildinfo' \
-            -czf "$RUNNER_TEMP/c-lab-${GITHUB_SHA}.tgz" .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Upload deployment context
-        run: |
-          scp \
-            -i "$HOME/.ssh/deploy_key" \
-            -P "$DEPLOY_PORT" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
-            "$RUNNER_TEMP/c-lab-${GITHUB_SHA}.tgz" \
-            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/c-lab-${GITHUB_SHA}.tgz"
+      - name: Build once and load for testing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/snsnnd/C_Lab
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Rebuild and restart on server
+      - name: Smoke-test the exact image to be published
+        run: node scripts/docker-smoke.mjs --image "$IMAGE_TAG"
+
+      - name: Log in to GHCR for publication only
+        if: github.repository == 'snsnnd/C_Lab' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish and verify anonymous access before promoting main
+        if: github.repository == 'snsnnd/C_Lab' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh \
-            -i "$HOME/.ssh/deploy_key" \
-            -p "$DEPLOY_PORT" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "DEPLOY_PATH='$DEPLOY_PATH' ARCHIVE='/tmp/c-lab-${GITHUB_SHA}.tgz' bash -s" <<'REMOTE'
-          set -eu
-          case "$DEPLOY_PATH" in
-            /*) ;;
-            *) echo 'DEPLOY_PATH must be an absolute path' >&2; exit 1 ;;
-          esac
-          mkdir -p "$DEPLOY_PATH"
-          tar -xzf "$ARCHIVE" -C "$DEPLOY_PATH"
-          rm -f "$ARCHIVE"
-          cd "$DEPLOY_PATH"
-          docker compose up -d --build --remove-orphans
-          docker compose ps
-          docker compose exec -T nginx wget -qO- http://127.0.0.1/healthz >/dev/null
-          REMOTE
+          set -euo pipefail
+          docker push "$IMAGE_TAG"
+          IMAGE=$(docker image inspect "$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
+          [[ "$IMAGE" =~ ^ghcr\.io/snsnnd/c_lab@sha256:[0-9a-f]{64}$ ]]
+          # Verify public registry access without the login-action credentials.
+          PUBLIC_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$PUBLIC_CONFIG"' EXIT
+          docker --config "$PUBLIC_CONFIG" pull "$IMAGE"
+          CURRENT_SHA=$(curl --fail --silent --show-error --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/main" | jq -er '.sha')
+          {
+            echo '### Public tested image'
+            echo "\`$IMAGE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$CURRENT_SHA" == "$GITHUB_SHA" ]]; then
+            docker tag "$IMAGE_TAG" ghcr.io/snsnnd/c_lab:main
+            docker push ghcr.io/snsnnd/c_lab:main
+            echo 'Updated main. Pull and deploy this image manually when ready.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Not promoting main: this run is no longer the repository main HEAD.' >> "$GITHUB_STEP_SUMMARY"
+          fi

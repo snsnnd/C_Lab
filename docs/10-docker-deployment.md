@@ -2,6 +2,8 @@
 
 Docker 镜像同时提供静态网页和课堂同步 API。C 程序仍在浏览器中执行，服务器不编译学生源码。运行时只有 Node.js、`dist/` 和零依赖的同步服务，不需要数据库或数据卷。
 
+> 本文的 Compose 命令用于本地/自行托管的源码构建。`contabo-eu` 的公开镜像手动更新使用独立 image-only 配置，见 [镜像发布与手动部署](10-cicd-deploy.md)；不要在生产服务器执行下方的裸 `docker compose up`。
+
 ## 1. 快速启动
 
 需要 Docker Engine / Docker Desktop（Linux 容器模式）和 Docker Compose v2。宿主机不需要安装 Node.js 或 GCC。首次构建需要访问 Docker Hub、Debian 软件源和 npm。

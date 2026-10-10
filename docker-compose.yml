@@ -1,3 +1,6 @@
+# Legacy standalone nginx deployment; NOT used by production CI/CD.
+# contabo-eu uses host Caddy and deploy/compose.production.yaml instead.
+# Do not run this stack on contabo-eu: nginx would conflict with Caddy on port 80.
 services:
   app:
     build:

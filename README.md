@@ -59,6 +59,8 @@ docker compose up -d --build --wait
 
 完整配置、反向代理、更新和测试说明见 [Docker 部署](docs/10-docker-deployment.md)。
 
+GitHub Actions 在 `main` 更新后只负责测试、构建并发布公开镜像到 `ghcr.io/snsnnd/c_lab`，不连接服务器。服务器由管理员在维护窗口手动拉取指定 digest 并用 Compose 更新；没有自动更新或自动回滚。公开镜像无需 registry 登录，容器替换会清空课堂内存。公开 package 设置、手动更新和回滚说明见 [镜像发布与手动部署](docs/10-cicd-deploy.md)。
+
 ## 课堂同步（老师操作，学生跟随）
 
 仓库自带一个零依赖的 Node 同步服务（`server/serve.mjs`，静态托管 + SSE 推送）：

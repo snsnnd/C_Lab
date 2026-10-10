@@ -1,5 +1,6 @@
 services:
   c-lab:
+    image: ${C_LAB_IMAGE:-c-lab:local}
     build:
       context: .
       target: runtime
