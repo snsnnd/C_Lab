@@ -10,6 +10,7 @@
     "serve": "node server/serve.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",
+    "test:gcc:batch": "vitest run src/engine/batch-gcc.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

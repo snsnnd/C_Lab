@@ -4,7 +4,7 @@
 
 export type Type =
   | { kind: 'void' }
-  | { kind: 'int'; bits: 8 | 16 | 32 | 64; signed: boolean; boolean?: boolean }
+  | { kind: 'int'; bits: 8 | 16 | 32 | 64; signed: boolean; rank?: IntRank; boolean?: boolean }
   | { kind: 'float'; bits: 32 | 64 }
   | { kind: 'pointer'; to: Type }
   | { kind: 'array'; of: Type; count: number }
@@ -15,7 +15,8 @@ export type Type =
 export interface Field { name: string; type: Type; offset: number }
 /** A field as written in source; its offset comes from the layout pass. */
 export type FieldSpec = Omit<Field, 'offset'>;
-export interface Param { name: string; type: Type }
+export interface Param { name: string; type: Type; readonly?: boolean }
+export type IntRank = 1 | 2 | 3 | 4 | 5;
 
 export const VOID: Type = { kind: 'void' };
 
@@ -61,14 +62,16 @@ export function isFunction(t: Type): t is FunctionType {
   return t.kind === 'function';
 }
 
-export function intType(bits: 8 | 16 | 32 | 64 = 32, signed = true): Type {
-  return { kind: 'int', bits, signed };
+export function intType(bits: 8 | 16 | 32 | 64 = 32, signed = true, rank?: IntRank): Type {
+  return { kind: 'int', bits, signed, rank: rank ?? (bits === 8 ? 1 : bits === 16 ? 2 : bits === 32 ? 3 : 4) };
 }
 export const INT = intType(32, true);
 export const UNSIGNED_INT = intType(32, false);
 export const CHAR = intType(8, true);
 export const LONG = intType(64, true);
 export const UNSIGNED_LONG = intType(64, false);
+export const LONG_LONG = intType(64, true, 5);
+export const UNSIGNED_LONG_LONG = intType(64, false, 5);
 export const FLOAT = { kind: 'float', bits: 32 } as Type;
 export const DOUBLE = { kind: 'float', bits: 64 } as Type;
 
@@ -151,17 +154,29 @@ export function usualArithmetic(a: Type, b: Type): Type {
   }
   const ia = (pa.kind === 'int' ? pa : INT) as IntType;
   const ib = (pb.kind === 'int' ? pb : INT) as IntType;
-  const rank = (t: { bits: number }): number => (t.bits === 64 ? 2 : t.bits === 32 ? 1 : 0);
-  const [hi, lo] = rank(ia) >= rank(ib) ? [ia, ib] : [ib, ia];
-  const bits = Math.max(hi.bits, lo.bits) as 32 | 64;
-  const signed = hi.signed && lo.signed;
-  return { kind: 'int', bits, signed };
+  const rank = (t: IntType): number => t.rank ?? (t.bits === 64 ? 4 : t.bits === 32 ? 3 : t.bits === 16 ? 2 : 1);
+  if (ia.signed === ib.signed) return rank(ia) >= rank(ib) ? ia : ib;
+
+  const unsigned = ia.signed ? ib : ia;
+  const signed = ia.signed ? ia : ib;
+  if (rank(unsigned) >= rank(signed)) return intType(unsigned.bits, false, unsigned.rank);
+  // A wider signed type can represent every value of the narrower unsigned type.
+  if (signed.bits > unsigned.bits) return signed;
+  return intType(signed.bits, false, signed.rank);
+}
+
+/** Convert a numeric value as if it were stored in the given scalar type. */
+export function coerceNumber(value: number, t: Type): number {
+  if (t.kind === 'enum') return coerceNumber(value, t.base);
+  if (t.kind === 'int') return wrapInteger(value, t);
+  if (t.kind === 'float' && t.bits === 32) return Math.fround(value);
+  return value;
 }
 
 export function typeName(t: Type): string {
   switch (t.kind) {
     case 'void': return 'void';
-    case 'int': return t.boolean ? '_Bool' : `${t.signed ? '' : 'unsigned '}${t.bits === 8 ? 'char' : t.bits === 16 ? 'short' : t.bits === 64 ? 'long' : 'int'}`;
+    case 'int': return t.boolean ? '_Bool' : `${t.signed ? '' : 'unsigned '}${t.bits === 8 ? 'char' : t.bits === 16 ? 'short' : t.bits === 64 ? (t.rank === 5 ? 'long long' : 'long') : 'int'}`;
     case 'float': return t.bits === 32 ? 'float' : 'double';
     case 'pointer': return `${typeName(t.to)}*`;
     case 'array': {

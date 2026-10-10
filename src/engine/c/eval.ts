@@ -7,9 +7,9 @@ import {
   type AggregateValue, type ScalarValue,
 } from './memory';
 import {
-  CHAR, DOUBLE, INT, LONG, VOID, fieldOffsets, findField, integerRange, isAggregate, isArray,
+  CHAR, DOUBLE, INT, LONG, UNSIGNED_LONG, VOID, fieldOffsets, findField, integerRange, isAggregate, isArray,
   isArithmetic, isFloating, isInteger, isPointer, isRecord, isScalar, isUnion, layoutRecord,
-  pointerTo, promote, sizeOf, typeName, usualArithmetic, wrapInteger,
+  coerceNumber, pointerTo, promote, sizeOf, typeName, usualArithmetic, wrapInteger,
   type Param, type Type,
 } from './types';
 import type { BinaryOp, Declaration, Expression, Initializer, Program, Statement } from './parse';
@@ -21,6 +21,7 @@ export interface Binding {
   name: string;
   type: Type;
   address: number;
+  readonly?: boolean;
   /** Frame label such as `main` or `sort`. */
   frame: string;
   kind: 'local' | 'parameter' | 'global' | 'heap';
@@ -86,6 +87,19 @@ const STOP_KINDS = new Set<Statement['kind']>(['ExprStmt', 'DeclStmt', 'Break', 
 const FORCED_STOP_KINDS = new Set<Statement['kind']>(['Break', 'Continue', 'Return']);
 const MAX_STEPS = 600_000;
 const FRAME_SLOTS = 512;
+
+interface ExpressionEffects {
+  reads: Set<string>;
+  writes: Set<string>;
+  pendingWrites: Set<string>;
+}
+
+const emptyEffects = (): ExpressionEffects => ({ reads: new Set(), writes: new Set(), pendingWrites: new Set() });
+const unionEffects = (...effects: ExpressionEffects[]): ExpressionEffects => ({
+  reads: new Set(effects.flatMap(effect => [...effect.reads])),
+  writes: new Set(effects.flatMap(effect => [...effect.writes])),
+  pendingWrites: new Set(effects.flatMap(effect => [...effect.pendingWrites])),
+});
 
 interface FunctionEntry {
   unit?: string;
@@ -155,7 +169,7 @@ export class Interpreter {
       this.currentUnit = this.program.units?.get(decl);
       const size = Math.max(1, sizeOf(decl.type));
       const address = this.memory.allocStatic(size, decl.name);
-      this.bindings.push({ name: decl.name, type: decl.type, address, frame: this.currentUnit ? `全局 · ${this.currentUnit}` : '全局', kind: 'global', unit: this.currentUnit, internal: decl.storage === 'static' });
+       this.bindings.push({ name: decl.name, type: decl.type, address, frame: this.currentUnit ? `全局 · ${this.currentUnit}` : '全局', kind: 'global', unit: this.currentUnit, internal: decl.storage === 'static', readonly: decl.readonly });
       if (decl.init) yield* this.initialize(address, decl.type, decl.init, decl.line);
     }
     const main = this.functions.get('main');
@@ -244,7 +258,7 @@ export class Interpreter {
       case 'Break': return { signal: 'break' };
       case 'Continue': return { signal: 'continue' };
       case 'Return': {
-        if (!node.value) return { signal: 'return', value: { type: INT, value: 0 } };
+        if (!node.value) return { signal: 'return' };
         return { signal: 'return', value: yield* this.eval(node.value, depth) };
       }
       case 'Switch': return yield* this.runSwitch(node, depth);
@@ -362,12 +376,12 @@ export class Interpreter {
         this.memory.zero(address, size);
         this.staticLocals.set(decl, address);
       }
-      this.bindings.push({ name: decl.name, type: decl.type, address: address!, frame: `${this.currentFrame()} · static`, kind: 'local' });
+       this.bindings.push({ name: decl.name, type: decl.type, address: address!, frame: `${this.currentFrame()} · static`, kind: 'local', readonly: decl.readonly });
       if (first && decl.init) yield* this.initialize(address!, decl.type, decl.init, decl.line);
       return;
     }
     const address = this.memory.allocStack(size, decl.name);
-    this.bindings.push({ name: decl.name, type: decl.type, address, frame: this.currentFrame(), kind: 'local' });
+    this.bindings.push({ name: decl.name, type: decl.type, address, frame: this.currentFrame(), kind: 'local', readonly: decl.readonly });
     if (decl.init) yield* this.initialize(address, decl.type, decl.init, decl.line);
   }
 
@@ -386,6 +400,7 @@ export class Interpreter {
         return;
       }
       if (isArray(type) && init.index !== undefined) {
+        if (init.index < 0 || init.index >= type.count) throw new RuntimeError(`数组初始化下标越界：${init.index}，数组长度为 ${type.count}`, line);
         yield* this.initialize(address + init.index * sizeOf(type.of), type.of, init.value, line);
         return;
       }
@@ -398,7 +413,11 @@ export class Interpreter {
           return;
         }
         if (isArray(type) && type.of.kind === 'int' && type.of.bits === 8) {
-          this.memory.writeBytes(address, Uint8Array.from(init.expr.bytes.map(byte => byte & 0xff)));
+          const capacity = sizeOf(type);
+          if (init.expr.bytes.length > capacity + 1) throw new RuntimeError('字符串初始化器超出字符数组容量', line);
+          this.memory.zero(address, sizeOf(type));
+          const bytes = init.expr.bytes.length === capacity + 1 ? init.expr.bytes.slice(0, capacity) : init.expr.bytes;
+          this.memory.writeBytes(address, Uint8Array.from(bytes.map(byte => byte & 0xff)));
           return;
         }
       }
@@ -408,28 +427,31 @@ export class Interpreter {
     }
     if (init.kind !== 'List') throw new RuntimeError('无法识别的初始化项', line);
     if (!isAggregate(type)) {
+      if (init.items.length > 1) throw new RuntimeError(`${typeName(type)} 初始化器包含过多项目`, line);
       const first = init.items[0];
       if (first) yield* this.initialize(address, type, first, line);
       return;
     }
     this.memory.zero(address, Math.max(1, sizeOf(type)));
-    if (isArray(type)) {
-      let cursor = 0;
-      for (const item of init.items) {
-        if (item.kind === 'Expr' && item.expr.kind === 'Str') {
-          const pool = this.internString(item.expr.bytes);
-          this.copyCString(pool, address + cursor);
-          cursor += item.expr.bytes.length;
-          continue;
-        }
-        if (item.kind === 'Designated' && item.index !== undefined) {
-          yield* this.initialize(address + item.index * sizeOf(type.of), type.of, item.value, line);
-          cursor = item.index + 1;
-          continue;
-        }
-        if (cursor >= type.count) break;
-        yield* this.initialize(address + cursor * sizeOf(type.of), type.of, item, line);
-        cursor += 1;
+      if (isArray(type)) {
+        let cursor = 0;
+        for (const item of init.items) {
+          if (item.kind === 'Expr' && item.expr.kind === 'Str') {
+            if (cursor >= type.count) throw new RuntimeError('数组初始化器包含过多项目', line);
+            const pool = this.internString(item.expr.bytes);
+            this.copyCString(pool, address + cursor);
+            cursor += item.expr.bytes.length;
+            continue;
+          }
+          if (item.kind === 'Designated' && item.index !== undefined) {
+            if (item.index < 0 || item.index >= type.count) throw new RuntimeError(`数组初始化下标越界：${item.index}，数组长度为 ${type.count}`, line);
+            yield* this.initialize(address + item.index * sizeOf(type.of), type.of, item.value, line);
+            cursor = item.index + 1;
+            continue;
+          }
+          if (cursor >= type.count) throw new RuntimeError('数组初始化器包含过多项目', line);
+          yield* this.initialize(address + cursor * sizeOf(type.of), type.of, item, line);
+          cursor += 1;
       }
       return;
     }
@@ -437,18 +459,22 @@ export class Interpreter {
     const fields = layoutRecord(type).fields;
     for (const field of fields) this.memory.zero(address + field.offset, Math.max(1, sizeOf(field.type)));
     let position = 0;
+    let unionInitialized = false;
     for (const item of init.items) {
       if (item.kind === 'Designated') {
+        if (isUnion(type) && unionInitialized) throw new RuntimeError('联合体初始化器只能指定一个成员', line);
         const field = findField(type, item.field);
         if (!field) throw new RuntimeError(`结构体没有字段 '${item.field}'`, line);
         yield* this.initialize(address + field.offset, field.type, item.value, line);
         position = fields.indexOf(field) + 1;
+        unionInitialized = true;
         continue;
       }
       const field = fields[position];
-      if (!field) break;
+      if (!field || isUnion(type) && unionInitialized) throw new RuntimeError('结构体初始化器包含过多项目', line);
       if (isUnion(type)) position = 0; else position += 1;
       yield* this.initialize(address + field.offset, field.type, item, line);
+      unionInitialized = isUnion(type) || unionInitialized;
     }
   }
 
@@ -476,7 +502,7 @@ export class Interpreter {
     this.steps++;
     if (this.steps > MAX_STEPS) throw new RuntimeError('执行步数超过上限，可能存在无法结束的循环', node.line);
     switch (node.kind) {
-      case 'Num': return { type: node.type, value: node.value };
+      case 'Num': return { type: node.type, value: coerceNumber(node.value, node.type) };
       case 'Char': return { type: INT, value: node.value };
       case 'Str': return { type: pointerTo(CHAR), value: this.internString(node.bytes) };
 
@@ -492,6 +518,7 @@ export class Interpreter {
 
 
       case 'Assign': {
+        this.checkExpressionEffects(node);
         const value = yield* this.eval(node.value, depth);
         if (node.op === '=') return yield* this.store(node.target, value, depth);
         const current = yield* this.eval(node.target, depth);
@@ -500,11 +527,14 @@ export class Interpreter {
       }
 
       case 'Binary': {
+        this.checkExpressionEffects(node);
         if (node.op === '&&' || node.op === '||') {
           const left = this.scalarOf(yield* this.eval(node.left, depth), node.line);
+          if (!isScalar(left.type)) throw new RuntimeError('逻辑运算只适用于标量类型', node.line);
           if (node.op === '&&' && left.value === 0) return { type: INT, value: 0 };
           if (node.op === '||' && left.value !== 0) return { type: INT, value: 1 };
           const right = this.scalarOf(yield* this.eval(node.right, depth), node.line);
+          if (!isScalar(right.type)) throw new RuntimeError('逻辑运算只适用于标量类型', node.line);
           return { type: INT, value: right.value !== 0 ? 1 : 0 };
         }
         const left = yield* this.eval(node.left, depth);
@@ -516,45 +546,63 @@ export class Interpreter {
         if (node.op === '&') return yield* this.addressOf(node.operand, depth);
         if (node.op === '*') {
           const pointer = this.scalarOf(yield* this.eval(node.operand, depth), node.line);
-          const pointee = isPointer(pointer.type) ? pointer.type.to : INT;
+          if (!isPointer(pointer.type)) throw new RuntimeError('解引用运算需要指针操作数', node.line);
+          const pointee = pointer.type.to;
           if (pointer.value === 0) throw new RuntimeError('解引用了空指针', node.line);
+          if (pointee.kind === 'function') return { type: pointer.type, value: pointer.value };
           if (isAggregate(pointee)) return { kind: 'aggregate', type: pointee, address: pointer.value };
           return this.memory.readValue(pointer.value, pointee);
         }
         const operand = this.scalarOf(yield* this.eval(node.operand, depth), node.line);
         const promoted = promote(operand.type);
+        if ((node.op === '+' || node.op === '-') && !isArithmetic(operand.type)) {
+          throw new RuntimeError(`一元 ${node.op} 只适用于算术类型`, node.line);
+        }
+        if (node.op === '~' && !isInteger(operand.type)) throw new RuntimeError('按位取反只适用于整数', node.line);
         switch (node.op) {
-          case '-': return { type: promoted, value: wrapInteger(-operand.value, promoted) };
-          case '+': return { type: promoted, value: operand.value };
+          case '-': return { type: promoted, value: coerceNumber(-operand.value, promoted) };
+          case '+': return { type: promoted, value: coerceNumber(operand.value, promoted) };
           case '!': return { type: INT, value: operand.value === 0 ? 1 : 0 };
-          case '~': return { type: promoted, value: wrapInteger(~operand.value, promoted) };
+          case '~': return { type: promoted, value: coerceNumber(~operand.value, promoted) };
           default: throw new RuntimeError(`未处理的一元运算符 ${node.op}`, node.line);
         }
       }
 
       case 'IncDec': {
         const before = this.scalarOf(yield* this.eval(node.operand, depth), node.line);
+        if (!isArithmetic(before.type) && !isPointer(before.type)) throw new RuntimeError('自增/自减只适用于算术类型或指针', node.line);
         const after = this.scalarOf(this.binary(node.op === '++' ? '+' : '-', before, { type: INT, value: 1 }, node.line), node.line);
         yield* this.store(node.operand, after, depth);
         return node.prefix ? after : before;
       }
 
       case 'Ternary': {
+        this.checkExpressionEffects(node);
         const cond = this.scalarOf(yield* this.eval(node.cond, depth), node.line);
-        return cond.value !== 0 ? yield* this.eval(node.then, depth) : yield* this.eval(node.otherwise, depth);
+        if (!isScalar(cond.type)) throw new RuntimeError('条件运算符的条件必须是标量类型', node.line);
+        const thenType = this.expressionType(node.then, node.line);
+        const otherwiseType = this.expressionType(node.otherwise, node.line);
+        const resultType = this.conditionalType(thenType, otherwiseType, node.line, node.then, node.otherwise);
+        const selected = cond.value !== 0 ? yield* this.eval(node.then, depth) : yield* this.eval(node.otherwise, depth);
+        return isAggregateValue(selected) ? selected : this.convertArgument(selected, resultType, node.line);
       }
 
       case 'Comma':
+        this.checkExpressionEffects(node);
         yield* this.eval(node.left, depth);
         return yield* this.eval(node.right, depth);
 
-      case 'Call': return yield* this.call(node, depth);
+      case 'Call':
+        this.checkExpressionEffects(node);
+        return yield* this.call(node, depth);
       case 'Index': {
+        this.checkExpressionEffects(node);
         const { address, elementType } = yield* this.elementAddress(node, depth);
         if (isAggregate(elementType)) return { kind: 'aggregate', type: elementType, address };
         return this.memory.readValue(address, elementType);
       }
       case 'Member': {
+        this.checkExpressionEffects(node);
         const holder = yield* this.memberHolder(node, depth);
         return this.readField(holder.address, holder.type, node.field, node.line);
       }
@@ -564,15 +612,7 @@ export class Interpreter {
       }
       case 'SizeofType': return { type: LONG, value: sizeOf(node.type) };
       case 'SizeofExpr': {
-        if (node.operand.kind === 'Var') {
-          const name = node.operand.name;
-          if (!this.hasBinding(name)) {
-            const alias = this.program.decls.find(decl => decl.kind === 'TypeDecl' && decl.name === name);
-            if (alias) return { type: LONG, value: sizeOf(alias.type) };
-          }
-        }
-        const value = yield* this.eval(node.operand, depth);
-        return { type: LONG, value: sizeOf(value.type) };
+        return { type: LONG, value: sizeOf(this.expressionType(node.operand, node.line)) };
       }
       default:
         throw new RuntimeError(`未处理的表达式 ${(node as Expression).kind}`, (node as Expression).line);
@@ -628,6 +668,7 @@ export class Interpreter {
   }
 
   private *store(target: Expression, rawValue: Value, depth: number): Generator<StepEvent, Value, void> {
+    if (this.isReadOnlyTarget(target)) throw new RuntimeError('不能修改 const 对象', target.line);
     let value = rawValue;
     if (target.kind === 'Var') {
       const type = this.lookup(target.name).type;
@@ -658,7 +699,8 @@ export class Interpreter {
       case 'Unary': {
         if (target.op !== '*') throw new RuntimeError('这个表达式不能作为赋值目标', target.line);
         const pointer = this.scalarOf(yield* this.eval(target.operand, depth), target.line);
-        const pointee = isPointer(pointer.type) ? pointer.type.to : INT;
+        if (!isPointer(pointer.type)) throw new RuntimeError('解引用运算需要指针操作数', target.line);
+        const pointee = pointer.type.to;
         if (pointer.value === 0) throw new RuntimeError('通过空指针写入', target.line);
         this.writeAt(pointer.value, pointee, value, target.line);
         return value;
@@ -712,7 +754,21 @@ export class Interpreter {
     }
     if (isAggregateValue(value)) throw new RuntimeError(`不能把 ${typeName(value.type)} 赋值给 ${typeName(type)}`, line);
     if (!isScalar(type)) throw new RuntimeError(`不能给 ${typeName(type)} 赋值`, line);
-    this.memory.writeValue(address, type, value);
+    this.memory.writeValue(address, type, {
+      type,
+      value: type.kind === 'pointer' ? value.value : coerceNumber(value.value, type),
+    });
+  }
+
+  private isReadOnlyTarget(node: Expression): boolean {
+    switch (node.kind) {
+      case 'Var': return this.lookup(node.name).readonly === true;
+      case 'Index': return this.isReadOnlyTarget(node.base);
+      case 'Member': return this.isReadOnlyTarget(node.base);
+      case 'Cast': return this.isReadOnlyTarget(node.operand);
+      case 'Comma': return this.isReadOnlyTarget(node.right);
+      default: return false;
+    }
   }
 
   /**
@@ -728,11 +784,255 @@ export class Interpreter {
     return value;
   }
 
+  private defaultArgument(value: Value): Value {
+    if (isAggregateValue(value)) {
+      if (isArray(value.type)) return { type: pointerTo(value.type.of), value: value.address };
+      return value;
+    }
+    const promoted = value.type.kind === 'float' && value.type.bits === 32 ? DOUBLE : promote(value.type);
+    return { type: promoted, value: isScalar(promoted) && promoted.kind !== 'pointer' ? coerceNumber(value.value, promoted) : value.value };
+  }
+
+  private convertArgument(value: Value, target: Type, line: number): Value {
+    if (isAggregateValue(value)) {
+      if (isAggregate(target) && typeName(value.type) === typeName(target)) return value;
+      throw new RuntimeError(`不能把 ${typeName(value.type)} 传给 ${typeName(target)} 参数`, line);
+    }
+    if (isPointer(target)) {
+      if (isPointer(value.type)) return { type: target, value: value.value };
+      if (isInteger(value.type) && value.value === 0) return { type: target, value: 0 };
+      throw new RuntimeError(`不能把 ${typeName(value.type)} 传给 ${typeName(target)} 参数`, line);
+    }
+    if (isArithmetic(target) && isArithmetic(value.type)) return { type: target, value: coerceNumber(value.value, target) };
+    throw new RuntimeError(`不能把 ${typeName(value.type)} 传给 ${typeName(target)} 参数`, line);
+  }
+
   private scalarOf(value: Value, line: number): ScalarValue {
     if (isAggregateValue(value)) {
+      if (isArray(value.type)) return { type: pointerTo(value.type.of), value: value.address };
       throw new RuntimeError(`这里需要单个数值，实际得到的是${typeName(value.type)}`, line);
     }
     return value;
+  }
+
+  /** Infer an expression type without evaluating it. This is required for
+   * sizeof and for conditional expressions, whose unused branch is not run. */
+  private expressionType(node: Expression, line: number): Type {
+    switch (node.kind) {
+      case 'Num': return node.type;
+      case 'Char': return INT;
+      case 'Str': return pointerTo(CHAR);
+      case 'Var': {
+        const functionEntry = this.findFunction(node.name);
+        if (functionEntry && !this.hasBinding(node.name)) return pointerTo(functionEntry.type);
+        const alias = this.typedefs.get(node.name);
+        if (alias && !this.hasBinding(node.name)) return alias;
+        return this.lookup(node.name).type;
+      }
+      case 'Unary': {
+        const operand = this.expressionType(node.operand, line);
+        if (node.op === '&') return pointerTo(operand);
+        if (node.op === '*') {
+          if (!isPointer(operand)) throw new RuntimeError('解引用运算需要指针操作数', line);
+          return operand.to;
+        }
+        if (node.op === '!') {
+          if (!isScalar(operand)) throw new RuntimeError('逻辑非只适用于标量类型', line);
+          return INT;
+        }
+        if ((node.op === '+' || node.op === '-') && !isArithmetic(operand)) throw new RuntimeError(`一元 ${node.op} 只适用于算术类型`, line);
+        if (node.op === '~' && !isInteger(operand)) throw new RuntimeError('按位取反只适用于整数', line);
+        return promote(operand);
+      }
+      case 'IncDec': {
+        const operand = this.expressionType(node.operand, line);
+        if (!isArithmetic(operand) && !isPointer(operand)) throw new RuntimeError('自增/自减只适用于算术类型或指针', line);
+        return operand;
+      }
+      case 'Binary': {
+        const left = this.expressionType(node.left, line);
+        const right = this.expressionType(node.right, line);
+        if (node.op === '<' || node.op === '>' || node.op === '<=' || node.op === '>=' || node.op === '==' || node.op === '!=') {
+          this.comparisonType(left, right, line);
+          return INT;
+        }
+        if (isPointer(left) || isPointer(right)) return this.pointerBinaryType(node.op, left, right, line);
+        if (!isArithmetic(left) || !isArithmetic(right)) throw new RuntimeError(`运算符 ${node.op} 不适用于 ${typeName(left)} 和 ${typeName(right)}`, line);
+        if ((node.op === '%' || node.op === '<<' || node.op === '>>' || node.op === '&' || node.op === '^' || node.op === '|') && (!isInteger(left) || !isInteger(right))) {
+          throw new RuntimeError(`${node.op} 运算只适用于整数`, line);
+        }
+        return node.op === '<<' || node.op === '>>' ? promote(left) : usualArithmetic(left, right);
+      }
+      case 'Logical': {
+        const left = this.expressionType(node.left, line);
+        const right = this.expressionType(node.right, line);
+        if (!isScalar(left) || !isScalar(right)) throw new RuntimeError('逻辑运算只适用于标量类型', line);
+        return INT;
+      }
+      case 'Assign': return this.expressionType(node.target, line);
+      case 'Ternary': return this.conditionalType(this.expressionType(node.then, line), this.expressionType(node.otherwise, line), line, node.then, node.otherwise);
+      case 'Call': {
+        if (node.callee.kind === 'Var') {
+          const known = this.findFunction(node.callee.name);
+          if (known) return known.type.ret;
+          if (isNative(node.callee.name)) return nativeReturnType(node.callee.name);
+        }
+        const callee = this.expressionType(node.callee, line);
+        const target = isPointer(callee) ? callee.to : callee;
+        if (target.kind !== 'function') throw new RuntimeError('调用的对象不是函数', line);
+        return target.ret;
+      }
+      case 'Index': {
+        const base = this.expressionType(node.base, line);
+        const index = this.expressionType(node.index, line);
+        if (!isInteger(index)) throw new RuntimeError('下标必须是整数', line);
+        if (isArray(base)) return base.of;
+        if (isPointer(base)) return base.to;
+        throw new RuntimeError('下标运算需要数组或指针', line);
+      }
+      case 'Member': {
+        const base = this.expressionType(node.base, line);
+        const record = node.arrow ? (isPointer(base) ? base.to : undefined) : base;
+        const field = record && findField(record, node.field);
+        if (!field) throw new RuntimeError(`无法访问 ${typeName(base)} 的字段 '${node.field}'`, line);
+        return field.type;
+      }
+      case 'Cast': return node.to;
+      case 'SizeofType':
+      case 'SizeofExpr': return LONG;
+      case 'Comma':
+        this.expressionType(node.left, line);
+        return this.expressionType(node.right, line);
+    }
+  }
+
+  private conditionalType(thenType: Type, otherwiseType: Type, line: number, thenNode?: Expression, otherwiseNode?: Expression): Type {
+    if (isArithmetic(thenType) && isArithmetic(otherwiseType)) return usualArithmetic(thenType, otherwiseType);
+    if (isPointer(thenType) && isPointer(otherwiseType)) {
+      if (typeName(thenType.to) === typeName(otherwiseType.to)) return thenType;
+      if (thenType.to.kind === 'void' || otherwiseType.to.kind === 'void') return pointerTo(VOID);
+      throw new RuntimeError(`条件运算符的两个指针类型不兼容：${typeName(thenType)} 和 ${typeName(otherwiseType)}`, line);
+    }
+    if (isPointer(thenType) && isInteger(otherwiseType) && otherwiseNode && this.isNullPointerConstant(otherwiseNode)) return thenType;
+    if (isInteger(thenType) && isPointer(otherwiseType) && thenNode && this.isNullPointerConstant(thenNode)) return otherwiseType;
+    if (isPointer(thenType) && isInteger(otherwiseType) || isInteger(thenType) && isPointer(otherwiseType)) {
+      throw new RuntimeError('指针只能与空指针常量组合使用条件运算符', line);
+    }
+    if (thenType.kind === 'void' && otherwiseType.kind === 'void') return VOID;
+    if (isAggregate(thenType) && isAggregate(otherwiseType) && typeName(thenType) === typeName(otherwiseType)) return thenType;
+    throw new RuntimeError(`条件运算符的两个结果类型不兼容：${typeName(thenType)} 和 ${typeName(otherwiseType)}`, line);
+  }
+
+  private isNullPointerConstant(node: Expression): boolean {
+    if (node.kind === 'Num') return isInteger(node.type) && node.value === 0;
+    if (node.kind === 'Cast') return this.isNullPointerConstant(node.operand);
+    return false;
+  }
+
+  private comparisonType(left: Type, right: Type, line: number): void {
+    if (isArithmetic(left) && isArithmetic(right)) return;
+    if (isPointer(left) && isPointer(right)) return;
+    if ((isPointer(left) && isInteger(right)) || (isInteger(left) && isPointer(right))) return;
+    throw new RuntimeError(`比较运算不适用于 ${typeName(left)} 和 ${typeName(right)}`, line);
+  }
+
+  private pointerBinaryType(op: BinaryOp, left: Type, right: Type, line: number): Type {
+    const leftPointer = isPointer(left);
+    const rightPointer = isPointer(right);
+    if (op === '+' || op === '-') {
+      if (leftPointer && rightPointer) {
+        if (op === '+') throw new RuntimeError('两个指针不能相加', line);
+        return LONG;
+      }
+      if (leftPointer && isInteger(right)) return left;
+      if (op === '+' && isInteger(left) && rightPointer) return right;
+      throw new RuntimeError(`指针运算需要整数偏移量，实际得到 ${typeName(left)} 和 ${typeName(right)}`, line);
+    }
+    if (op === '==' || op === '!=' || op === '<' || op === '>' || op === '<=' || op === '>=') {
+      this.comparisonType(left, right, line);
+      return INT;
+    }
+    throw new RuntimeError(`运算符 ${op} 不适用于指针`, line);
+  }
+
+  private checkExpressionEffects(node: Expression): void {
+    this.expressionEffects(node);
+  }
+
+  private expressionEffects(node: Expression): ExpressionEffects {
+    switch (node.kind) {
+      case 'Num':
+      case 'Char':
+      case 'Str':
+      case 'SizeofType':
+      case 'SizeofExpr': return emptyEffects();
+      case 'Var': return { reads: new Set([node.name]), writes: new Set(), pendingWrites: new Set() };
+      case 'Unary': return this.expressionEffects(node.operand);
+      case 'Cast': return this.expressionEffects(node.operand);
+      case 'IncDec': {
+        const effects = this.expressionEffects(node.operand);
+        const name = this.lvalueName(node.operand);
+        if (name) {
+          effects.reads.add(name);
+          effects.writes.add(name);
+          effects.pendingWrites.add(name);
+        }
+        return effects;
+      }
+      case 'Assign': {
+        const target = this.expressionEffects(node.target);
+        const value = this.expressionEffects(node.value);
+        this.assertUnsequenced(target, value, node.line);
+        const effects = unionEffects(target, value);
+        const name = this.lvalueName(node.target);
+        if (name) {
+          effects.writes.add(name);
+          effects.pendingWrites.add(name);
+        }
+        return effects;
+      }
+      case 'Binary': {
+        const left = this.expressionEffects(node.left);
+        const right = this.expressionEffects(node.right);
+        if (node.op !== '&&' && node.op !== '||') this.assertUnsequenced(left, right, node.line);
+        return unionEffects(left, right);
+      }
+      case 'Logical': {
+        const left = this.expressionEffects(node.left);
+        const right = this.expressionEffects(node.right);
+        return unionEffects(left, right);
+      }
+      case 'Ternary': return unionEffects(this.expressionEffects(node.cond), this.expressionEffects(node.then), this.expressionEffects(node.otherwise));
+      case 'Comma': {
+        const left = this.expressionEffects(node.left);
+        const right = this.expressionEffects(node.right);
+        return { reads: new Set([...left.reads, ...right.reads]), writes: new Set([...left.writes, ...right.writes]), pendingWrites: new Set(right.pendingWrites) };
+      }
+      case 'Index': {
+        const base = this.expressionEffects(node.base);
+        const index = this.expressionEffects(node.index);
+        this.assertUnsequenced(base, index, node.line);
+        return unionEffects(base, index);
+      }
+      case 'Member': return this.expressionEffects(node.base);
+      case 'Call': {
+        const parts = [this.expressionEffects(node.callee), ...node.args.map(argument => this.expressionEffects(argument))];
+        for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) this.assertUnsequenced(parts[i], parts[j], node.line);
+        return unionEffects(...parts);
+      }
+    }
+  }
+
+  private assertUnsequenced(left: ExpressionEffects, right: ExpressionEffects, line: number): void {
+    const conflict = [...left.pendingWrites].find(name => right.reads.has(name) || right.writes.has(name))
+      ?? [...right.pendingWrites].find(name => left.reads.has(name) || left.writes.has(name));
+    if (conflict) throw new RuntimeError(`变量 ${conflict} 在同一完整表达式中的修改与读取/再次修改没有明确的求值顺序，属于未定义行为`, line);
+  }
+
+  private lvalueName(node: Expression): string | undefined {
+    if (node.kind === 'Var') return node.name;
+    if (node.kind === 'Cast') return this.lvalueName(node.operand);
+    return undefined;
   }
 
   /* ---------- Calls ---------- */
@@ -764,9 +1064,13 @@ export class Interpreter {
 
     const args: Value[] = [];
     for (const argument of node.args) args.push(yield* this.eval(argument, depth));
+    if (args.length < signature.params.length || (!signature.variadic && args.length > signature.params.length)) {
+      const expected = signature.variadic ? `至少 ${signature.params.length}` : `恰好 ${signature.params.length}`;
+      throw new RuntimeError(`函数 ${entry.name} 需要${expected} 个参数，实际得到 ${args.length} 个`, node.line);
+    }
     const converted = args.map((argument, index) => {
       const paramType = signature.params[index]?.type;
-      return paramType ? this.decay(argument, paramType, node.line) : argument;
+      return paramType ? this.convertArgument(this.decay(argument, paramType, node.line), paramType, node.line) : this.defaultArgument(argument);
     });
     return yield* this.invokeUser(entry, converted, depth, signature);
   }
@@ -785,12 +1089,14 @@ export class Interpreter {
     const callerStart = this.localStart;
     this.currentUnit = entry.unit;
     this.localStart = marker;
-    const frameBase = this.memory.allocStack(FRAME_SLOTS, `${entry.name} 调用帧`);
+    const frameBase = this.memory.allocStackFrame(FRAME_SLOTS, `${entry.name} 调用帧`);
     this.frames.push(frame);
+    let result: Value = { type: returnType, value: 0 };
+    let returnedBytes: Uint8Array | undefined;
     try {
       functionType.params.forEach((param: Param, index: number) => {
         const address = this.memory.allocStack(Math.max(1, sizeOf(param.type)), param.name || `参数${index + 1}`);
-        this.bindings.push({ name: param.name, type: param.type, address, frame: entry.name, kind: 'parameter' });
+        this.bindings.push({ name: param.name, type: param.type, address, frame: entry.name, kind: 'parameter', readonly: param.readonly });
         const argument = args[index];
         if (argument === undefined) return;
         if (isAggregate(param.type)) {
@@ -803,17 +1109,38 @@ export class Interpreter {
       });
 
       const flow = yield* this.execBlock(body, depth + 1);
-      yield { type: 'return', frame, value: returnType.kind === 'void' || flow?.signal !== 'return' || flow.value === undefined || isAggregateValue(flow.value) ? undefined : String(flow.value.value) };
-      if (returnType.kind === 'void') return { type: VOID, value: 0 };
-      if (flow?.signal !== 'return' || flow.value === undefined) return { type: returnType, value: 0 };
-      return flow.value;
+      if (returnType.kind === 'void') {
+        if (flow?.signal === 'return' && flow.value !== undefined) throw new RuntimeError(`void 函数 ${entry.name} 不能返回值`, this.lastLine);
+        yield { type: 'return', frame };
+        result = { type: VOID, value: 0 };
+      } else if (flow?.signal === 'return' && flow.value === undefined) {
+        throw new RuntimeError(`函数 ${entry.name} 的 return 缺少返回值`, this.lastLine);
+      } else if (flow?.signal !== 'return' || flow.value === undefined) {
+        yield { type: 'return', frame };
+        result = { type: returnType, value: 0 };
+      } else {
+        const returnedValue = this.convertArgument(this.decay(flow.value, returnType, this.lastLine), returnType, this.lastLine);
+        result = returnedValue;
+        if (isAggregateValue(result)) {
+          returnedBytes = this.memory.readBytes(result.address, sizeOf(result.type));
+          yield { type: 'return', frame };
+        } else {
+          yield { type: 'return', frame, value: String(result.value) };
+        }
+      }
     } finally {
       this.currentUnit = callerUnit;
       this.localStart = callerStart;
       this.frames.pop();
       this.bindings.length = marker;
       this.memory.releaseStack(frameBase);
+      if (returnedBytes && isAggregateValue(result)) {
+        const address = this.memory.allocStack(Math.max(1, sizeOf(result.type)), `${entry.name} 返回值`);
+        this.memory.writeBytes(address, returnedBytes);
+        result = { kind: 'aggregate', type: result.type, address };
+      }
     }
+    return result;
   }
 
   /* ---------- Native library calls ---------- */
@@ -828,7 +1155,8 @@ export class Interpreter {
         if (isArray(argument.type)) return { type: pointerTo(argument.type.of), value: argument.address };
         throw new RuntimeError(`${name}() 的参数不能是结构体`, node.line);
       }
-      return { type: argument.type, value: argument.value };
+      const promoted = argument.type.kind === 'float' && argument.type.bits === 32 ? { kind: 'float', bits: 64 } as Type : promote(argument.type);
+      return { type: promoted, value: coerceNumber(argument.value, promoted) };
     });
     if (name === 'qsort') {
       const [base, count, width, comparator] = scalars;
@@ -883,29 +1211,36 @@ export class Interpreter {
     if (!isArithmetic(a.type) || !isArithmetic(b.type)) {
       throw new RuntimeError(`运算符 ${op} 不适用于 ${typeName(a.type)} 和 ${typeName(b.type)}`, line);
     }
-    const resultType = usualArithmetic(a.type, b.type);
-    const asInt = (value: number): Value => ({ type: resultType, value: wrapInteger(value, resultType) });
+    const isShift = op === '<<' || op === '>>';
+    const resultType = isShift ? promote(a.type) : usualArithmetic(a.type, b.type);
+    if (op === '%' && resultType.kind === 'float') throw new RuntimeError('取模运算只适用于整数', line);
+    if ((op === '<<' || op === '>>' || op === '&' || op === '^' || op === '|') && (!isInteger(a.type) || !isInteger(b.type))) {
+      throw new RuntimeError(`${op} 运算只适用于整数`, line);
+    }
+    const leftValue = coerceNumber(a.value, resultType);
+    const rightValue = coerceNumber(b.value, isShift ? promote(b.type) : resultType);
+    const asResult = (value: number): Value => ({ type: resultType, value: coerceNumber(value, resultType) });
     switch (op) {
-      case '+': return asInt(a.value + b.value);
-      case '-': return asInt(a.value - b.value);
-      case '*': return asInt(a.value * b.value);
+      case '+': return asResult(leftValue + rightValue);
+      case '-': return asResult(leftValue - rightValue);
+      case '*': return asResult(leftValue * rightValue);
       case '/':
-        if (b.value === 0) throw new RuntimeError('整数除法或取模时除数为 0', line);
-        return resultType.kind === 'float' ? { type: resultType, value: a.value / b.value } : asInt(Math.trunc(a.value / b.value));
+        if (rightValue === 0 && resultType.kind !== 'float') throw new RuntimeError('整数除法或取模时除数为 0', line);
+        return resultType.kind === 'float' ? asResult(leftValue / rightValue) : asResult(Math.trunc(leftValue / rightValue));
       case '%':
-        if (b.value === 0) throw new RuntimeError('整数除法或取模时除数为 0', line);
-        return asInt(a.value % b.value);
-      case '<<': return asInt(a.value * 2 ** b.value);
-      case '>>': return asInt(Math.floor(a.value / 2 ** b.value));
-      case '<': return { type: INT, value: a.value < b.value ? 1 : 0 };
-      case '>': return { type: INT, value: a.value > b.value ? 1 : 0 };
-      case '<=': return { type: INT, value: a.value <= b.value ? 1 : 0 };
-      case '>=': return { type: INT, value: a.value >= b.value ? 1 : 0 };
-      case '==': return { type: INT, value: a.value === b.value ? 1 : 0 };
-      case '!=': return { type: INT, value: a.value !== b.value ? 1 : 0 };
-      case '&': return asInt((a.value | 0) & (b.value | 0));
-      case '^': return asInt((a.value | 0) ^ (b.value | 0));
-      case '|': return asInt((a.value | 0) | (b.value | 0));
+        if (rightValue === 0) throw new RuntimeError('整数除法或取模时除数为 0', line);
+        return asResult(leftValue % rightValue);
+      case '<<': return asResult(leftValue * 2 ** rightValue);
+      case '>>': return asResult(Math.floor(leftValue / 2 ** rightValue));
+      case '<': return { type: INT, value: leftValue < rightValue ? 1 : 0 };
+      case '>': return { type: INT, value: leftValue > rightValue ? 1 : 0 };
+      case '<=': return { type: INT, value: leftValue <= rightValue ? 1 : 0 };
+      case '>=': return { type: INT, value: leftValue >= rightValue ? 1 : 0 };
+      case '==': return { type: INT, value: leftValue === rightValue ? 1 : 0 };
+      case '!=': return { type: INT, value: leftValue !== rightValue ? 1 : 0 };
+      case '&': return asResult((leftValue | 0) & (rightValue | 0));
+      case '^': return asResult((leftValue | 0) ^ (rightValue | 0));
+      case '|': return asResult((leftValue | 0) | (rightValue | 0));
       default: throw new RuntimeError(`未处理的运算符 ${op}`, line);
     }
   }
@@ -914,7 +1249,14 @@ export class Interpreter {
     const leftPointer = isPointer(left.type);
     const rightPointer = isPointer(right.type);
     if (op === '+' || op === '-') {
-      if (leftPointer && rightPointer) throw new RuntimeError('本版暂不支持指针相减', line);
+      if (left.type.kind === 'pointer' && right.type.kind === 'pointer') {
+        if (op === '+') throw new RuntimeError('两个指针不能相加', line);
+        const leftElement = Math.max(1, sizeOf(left.type.to));
+        const rightElement = Math.max(1, sizeOf(right.type.to));
+        if (leftElement !== rightElement) throw new RuntimeError('只有指向同类元素的指针才能相减', line);
+        return { type: LONG, value: Math.trunc((left.value - right.value) / leftElement) };
+      }
+      if (!leftPointer && rightPointer && op === '-') throw new RuntimeError('整数不能减去指针', line);
       const pointer = leftPointer ? left : right;
       const integer = leftPointer ? right : left;
       if (!isInteger(integer.type)) throw new RuntimeError(`不能把 ${typeName(integer.type)} 加到指针上`, line);
@@ -923,10 +1265,12 @@ export class Interpreter {
       return { type: pointer.type, value: pointer.value + delta * elementSize };
     }
     if (op === '==' || op === '!=') {
+      if (leftPointer !== rightPointer && !(isInteger(left.type) || isInteger(right.type))) throw new RuntimeError('指针只能与指针或整数常量比较', line);
       const same = left.value === right.value;
       return { type: INT, value: op === '==' ? (same ? 1 : 0) : (same ? 0 : 1) };
     }
     if (op === '<' || op === '>' || op === '<=' || op === '>=') {
+      if (!leftPointer || !rightPointer) throw new RuntimeError('关系运算中的两个操作数必须都是指针', line);
       const result = op === '<' ? left.value < right.value
         : op === '>' ? left.value > right.value
           : op === '<=' ? left.value <= right.value : left.value >= right.value;
@@ -942,7 +1286,7 @@ export class Interpreter {
       throw new RuntimeError(`不能把 ${typeName(value.type)} 转换为 ${typeName(to)}`, line);
     }
     if (isPointer(to)) return { type: to, value: wrapInteger(value.value, INT) };
-    if (isFloating(to)) return { type: to, value: value.value };
+    if (isFloating(to)) return { type: to, value: coerceNumber(value.value, to) };
     if (isInteger(to)) {
       if (isFloating(value.type)) {
         const truncated = Math.trunc(value.value);
@@ -1024,16 +1368,20 @@ export class Interpreter {
     return bytes.map(byte => (byte >= 32 && byte < 127 ? String.fromCharCode(byte) : '\\x' + byte.toString(16).padStart(2, '0'))).join('');
   }
 
-  heapAllocate(size: number, label: string): number {
+  heapAllocate(size: number, label: string, clear = false): number {
     const address = this.memory.allocHeap(Math.max(1, size), label);
     if (address === undefined) throw new RuntimeError('堆空间不足，分配失败');
-    this.memory.zero(address, Math.max(1, size));
+    if (clear) this.memory.zero(address, Math.max(1, size));
     return address;
   }
 
   heapFree(address: number): boolean {
     if (address === 0) return false;
     const freed = this.memory.free(address);
+    if (!freed) {
+      if (this.memory.wasFreed(address)) throw new RuntimeError('重复释放或访问了已经释放的堆指针');
+      throw new RuntimeError('free() 只能释放 malloc/calloc 返回的堆指针');
+    }
     if (freed) {
       this.bindings.length = this.bindings.filter(binding => !(binding.kind === 'heap' && binding.address === address)).length;
     }
@@ -1052,6 +1400,6 @@ export function nativeReturnType(name: string): Type {
   if (['memcpy', 'memmove', 'memset'].includes(name)) return pointerTo(VOID);
   if (['atof', 'sqrt', 'pow', 'fabs', 'floor', 'ceil', 'round', 'sin', 'cos', 'tan', 'log', 'exp', 'fmod'].includes(name)) return DOUBLE;
   if (name === 'free' || name === 'exit' || name === 'qsort' || name === 'srand') return VOID;
-  if (name === 'strlen') return { kind: 'int', bits: 64, signed: false };
+  if (name === 'strlen') return UNSIGNED_LONG;
   return INT;
 }

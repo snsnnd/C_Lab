@@ -412,6 +412,9 @@ function describeBinding(interp: Interpreter, binding: Binding, previous?: Snaps
   if (binding.kind === 'heap' && interp.isFreed(binding.address)) {
     return { ...base, value: '已释放', freed: true, targetLabel: '内存已归还，读取它属于未定义行为' };
   }
+  if (binding.kind === 'heap') {
+    return { ...base, kind: 'heap', value: `${base.size} 字节`, targetLabel: 'malloc/calloc 返回的堆对象' };
+  }
   if (isRecord(binding.type)) {
     const fields = recordFields(interp, binding.address, binding.type, before);
     const summary = fields.filter(field => isScalarField(field)).map(field => `${field.name}=${field.value}`).join(' ');
@@ -440,11 +443,14 @@ function describeBinding(interp: Interpreter, binding: Binding, previous?: Snaps
   }
   if (isPointer(binding.type)) {
     const pointerType: PointerType = binding.type;
-    const value = interp.memory.readValue(binding.address, INT).value;
+    if (!interp.memory.isInitialized(binding.address, sizeOf(binding.type))) {
+      return { ...base, kind: 'pointer', value: '未初始化', targetLabel: '这个指针尚未获得初始值' };
+    }
+    const value = interp.memory.readValue(binding.address, binding.type).value;
     const target = resolveTarget(interp, binding, value, pointerType);
     return {
       ...base,
-      kind: binding.kind === 'heap' ? 'heap' : 'pointer',
+      kind: 'pointer',
       value: target ? `→ ${target.name}` : (value === 0 ? '空指针 NULL' : '→ 未解析对象'),
       target: target?.id,
       targetName: target?.name,
@@ -452,6 +458,7 @@ function describeBinding(interp: Interpreter, binding: Binding, previous?: Snaps
     };
   }
   if (binding.type.kind === 'enum') {
+    if (!interp.memory.isInitialized(binding.address, sizeOf(binding.type))) return { ...base, kind: 'enum', value: '未初始化' };
     const value = interp.memory.readValue(binding.address, INT).value;
     const names = [...interp.enumNames.entries()].filter(([, info]) => info.value === value).map(([name]) => name);
     return {
@@ -505,6 +512,7 @@ function recordFields(interp: Interpreter, address: number, type: RecordType, be
 
 function scalarText(interp: Interpreter, address: number, type: Type): string {
   if (isAggregate(type)) return '…';
+  if (!interp.memory.isInitialized(address, Math.max(1, sizeOf(type)))) return '未初始化';
   if (type.kind === 'int' && type.bits === 8) {
     const value = interp.memory.readValue(address, type).value;
     if (value === 0) return '\\0';

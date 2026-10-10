@@ -125,13 +125,13 @@ npm run serve       # 默认 0.0.0.0:8000，会打印本机与局域网地址
 
 ### 与 GCC 的对照
 
-引擎输出与 `gcc -std=c17` 编译运行的结果做过逐行对照，覆盖结构体数组、`sizeof`、结构体指针回调排序、整数除法、指针算术、`printf` 的 `%.2f`/`%5.1f` 对齐，全部一致。该对照已固化为回归测试（`src/engine/c-engine.test.ts`）。
+引擎输出与 `gcc -std=c17` 编译运行的结果做过逐行对照，覆盖结构体数组、`sizeof`、结构体指针回调排序、整数除法、指针算术、`printf` 的 `%.2f`/`%5.1f` 对齐，以及 signed/unsigned 混合转换、函数参数/返回值转换、函数原型参数检查和 float32 运算舍入，全部一致。另有 25 个批量程序覆盖整数、浮点、数学库、控制流、函数指针、数组、结构体、联合体、字符串、内存、输入、宏、多文件链接和边界数值；文本输出精确比较，数值输出按 token 做相对误差比较（`npm run test:gcc:batch`，实现见 `src/engine/batch-gcc.test.ts`）。
 
 ### 已验证支持
 
-变量与表达式、`if/else`、`switch`、`for/while/do`、`break/continue`、普通函数与递归、一维与二维数组、字符串、指针与指针算术、**结构体与结构体数组**、**结构体指针与 `->`**、**联合体（成员共享 +0，与 GCC 对照）**、**枚举**、**typedef**、**函数指针与回调**、结构体按值赋值、**静态局部变量**、位运算与 `bool`、定宽整数、`malloc/calloc/free`，以及 `printf`、`puts`、`putchar`、`scanf`、`sscanf`、`fgets`、`strlen`、`strcmp`、`strcpy`、`strcat`、`strncpy`、`strchr`、`strstr`、`memcpy`、`memmove`、`memset`、`memcmp`、`sprintf`、`snprintf`、`atoi`、`atof`、`rand`、`srand`、`qsort`、`sqrt`、`pow`、`fabs`、`floor`、`ceil`、`round`、`sin`、`cos`、`tan`、`log`、`exp`、`fmod`、`abs`、`exit`。`sizeof` 可作用于类型与数组，数组长度支持整数常量表达式，数组形参自动调整为指针（int a[] 即 int *）。
+变量与表达式、整数提升与常规算术转换（含 signed/unsigned）、赋值/参数/返回值隐式转换、`float32` 运算舍入、基础 `const` 对象约束、常见未排序副作用诊断、`if/else`、`switch`、`for/while/do`、`break/continue`、普通函数与递归、一维与二维数组、字符串、指针与指针算术、**结构体与结构体数组**、**结构体指针与 `->`**、**联合体（成员共享 +0，与 GCC 对照）**、**枚举**、**typedef**、**函数指针与回调**、结构体按值赋值、**静态局部变量**、位运算与 `bool`、定宽整数、`malloc/calloc/free`，以及 `printf`、`puts`、`putchar`、`scanf`、`sscanf`、`fgets`、`strlen`、`strcmp`、`strcpy`、`strcat`、`strncpy`、`strchr`、`strstr`、`memcpy`、`memmove`、`memset`、`memcmp`、`sprintf`、`snprintf`、`atoi`、`atof`、`rand`、`srand`、`qsort`、`sqrt`、`pow`、`fabs`、`floor`、`ceil`、`round`、`sin`、`cos`、`tan`、`log`、`exp`、`fmod`、`abs`、`exit`。`sizeof` 可作用于类型与数组，数组长度支持整数常量表达式，数组形参自动调整为指针（int a[] 即 int *）。
 
-**尚未支持**：`#line`、GNU 专用宏扩展、子目录与完整构建系统、位域、变长数组、线程，以及完整的文件 I/O 行为。标准库是教学子集，不等同于完整 C17 编译器；整数在 JavaScript 安全整数范围内讲解。
+**尚未支持**：`#line`、GNU 专用宏扩展、子目录与完整构建系统、位域、变长数组、线程，以及完整的文件 I/O 行为。运行时已对常见对象边界、未初始化读取和堆生命周期错误给出诊断，但仍不是完整的 UBSan；标准库是教学子集，不等同于完整 C17 编译器；整数在 JavaScript 安全整数范围内讲解。
 
 多文件课程（第 15–23 课）均在测试中用 `gcc -std=c17 -Wall -Wextra` 实际编译全部翻译单元，并与浏览器求值器输出对照；最终章的成绩管理系统还额外覆盖了容量不足、非法输入、重复学号与配置开关等边界（`src/engine/project-gcc.test.ts`、`src/engine/advanced-gcc.test.ts`）。
 
@@ -142,7 +142,7 @@ npm run serve       # 默认 0.0.0.0:8000，会打印本机与局域网地址
 3. 指针箭头表示逻辑关系，**不是本机地址**；地址受平台和分配顺序影响。
 4. 结构体的字节偏移按 x86-64 模型计算，换平台数值会变。
 5. 暂停和回退只控制已有轨迹，**程序已经运行完毕**；输出窗口显示完整输出，不随回放撤销。
-6. **未定义行为不会被自动检测**，例如越界读未初始化内存。
+6. 常见的对象越界、空指针、未初始化读取和堆生命周期错误会被诊断；更复杂的未定义行为（如未排序列副作用、严格别名和数据竞争）仍不会被完整检测。
 
 ## 文档
 

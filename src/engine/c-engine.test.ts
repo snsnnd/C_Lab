@@ -149,6 +149,40 @@ describe('错误与边界', () => {
     expect(trace.error).toContain('下标越界');
   });
 
+  it('指针越过数组末尾再解引用会报对象边界错误', async () => {
+    const trace = await run('int main(){int a[2]={1,2};int *p=a;return *(p+2);}');
+    expect(trace.status).toBe('error');
+    expect(trace.error).toContain('对象边界');
+  });
+
+  it('读取未初始化的自动变量会报错', async () => {
+    const trace = await run('int main(){int value;return value;}');
+    expect(trace.status).toBe('error');
+    expect(trace.error).toContain('未初始化');
+  });
+
+  it('malloc 内存不会错误地预清零', async () => {
+    const trace = await run('#include <stdlib.h>\nint main(){int *p=malloc(sizeof(int));return *p;}');
+    expect(trace.status).toBe('error');
+    expect(trace.error).toContain('未初始化');
+  });
+
+  it('calloc 内存会被初始化为零', async () => {
+    const trace = await run('#include <stdio.h>\n#include <stdlib.h>\nint main(){int *p=calloc(1,sizeof(int));printf("%d\\n",*p);free(p);return 0;}');
+    expect(trace.status).toBe('completed');
+    expect(trace.output).toBe('0\n');
+  });
+
+  it('释放后读取和释放非堆指针都会报错', async () => {
+    const useAfterFree = await run('#include <stdlib.h>\nint main(){int *p=malloc(sizeof(int));*p=1;free(p);return *p;}');
+    expect(useAfterFree.status).toBe('error');
+    expect(useAfterFree.error).toContain('失效');
+
+    const invalidFree = await run('#include <stdlib.h>\nint main(){int value=1;free(&value);return 0;}');
+    expect(invalidFree.status).toBe('error');
+    expect(invalidFree.error).toContain('堆指针');
+  });
+
   it('除零会明确报错', async () => {
     const trace = await run('#include <stdio.h>\nint main(){int a=1,b=0;printf("%d",a/b);return 0;}');
     expect(trace.status).toBe('error');
@@ -159,6 +193,104 @@ describe('错误与边界', () => {
     const trace = await run('int main(){return nope;}');
     expect(trace.status).toBe('error');
     expect(trace.error).toContain('未声明的标识符');
+  });
+
+  it('函数原型参数数量不匹配会报错', async () => {
+    const missing = await run('int add(int a,int b){return a+b;} int main(){return add(1);}');
+    expect(missing.status).toBe('error');
+    expect(missing.error).toContain('需要恰好 2 个参数');
+
+    const extra = await run('int add(int a){return a;} int main(){return add(1,2);}');
+    expect(extra.status).toBe('error');
+    expect(extra.error).toContain('需要恰好 1 个参数');
+  });
+
+  it('返回类型和 return 形式不匹配会报错', async () => {
+    const voidValue = await run('void stop(void){return 1;} int main(){stop();return 0;}');
+    expect(voidValue.status).toBe('error');
+    expect(voidValue.error).toContain('void 函数');
+
+    const missingValue = await run('int stop(void){return;} int main(){return stop();}');
+    expect(missingValue.status).toBe('error');
+    expect(missingValue.error).toContain('缺少返回值');
+  });
+
+  it('标量和数组初始化器的项目数量会校验', async () => {
+    const scalar = await run('int main(){int value={1,2};return value;}');
+    expect(scalar.status).toBe('error');
+    expect(scalar.error).toContain('初始化器包含过多项目');
+
+    const array = await run('int main(){int values[2]={1,2,3};return values[0];}');
+    expect(array.status).toBe('error');
+    expect(array.error).toContain('数组初始化器包含过多项目');
+  });
+
+  it('刚好填满字符数组的字符串初始化不会强行写入终止符', async () => {
+    const trace = await run('#include <stdio.h>\nint main(){char text[3]="abc";printf("%d\\n",text[2]);return 0;}');
+    expect(trace.status).toBe('completed');
+    expect(trace.output).toBe('99\n');
+  });
+
+  it('const 对象必须初始化且不能被修改', async () => {
+    const missing = await run('int main(){const int value;return 0;}');
+    expect(missing.status).toBe('error');
+    expect(missing.error).toContain('const 对象');
+
+    const scalar = await run('int main(){const int value=1;value=2;return value;}');
+    expect(scalar.status).toBe('error');
+    expect(scalar.error).toContain('不能修改 const');
+
+    const array = await run('int main(){const int values[2]={1,2};values[0]=3;return values[0];}');
+    expect(array.status).toBe('error');
+    expect(array.error).toContain('不能修改 const');
+
+    const parameter = await run('int bump(const int value){value=2;return value;} int main(){return bump(1);}');
+    expect(parameter.status).toBe('error');
+    expect(parameter.error).toContain('不能修改 const');
+  });
+
+  it('会诊断未排序的副作用，但保留有序运算', async () => {
+    const binary = await run('int main(){int i=0;return i++ + i++;}');
+    expect(binary.status).toBe('error');
+    expect(binary.error).toContain('求值顺序');
+
+    const callArgs = await run('int pair(int a,int b){return a+b;} int main(){int i=0;return pair(i++,i++);}');
+    expect(callArgs.status).toBe('error');
+    expect(callArgs.error).toContain('求值顺序');
+
+    const assignment = await run('int main(){int i=0;i=i++;return i;}');
+    expect(assignment.status).toBe('error');
+    expect(assignment.error).toContain('求值顺序');
+
+    const ordered = await run('#include <stdio.h>\nint main(){int i=0;int value=(i++,i);printf("%d %d\\n",value,i);return 0;}');
+    expect(ordered.status).toBe('completed');
+    expect(ordered.output).toBe('1 1\n');
+  });
+
+  it('sizeof 不执行操作数，条件运算符按共同类型转换', async () => {
+    const trace = await run('#include <stdio.h>\nint main(){int i=0;printf("%d %d %.1f %.1f\\n",(int)sizeof(i++),i,1?2:3.5,0?2:3.5);return 0;}');
+    expect(trace.status).toBe('completed');
+    expect(trace.output).toBe('4 0 2.0 3.5\n');
+  });
+
+  it('保留短路逻辑和逗号表达式的求值顺序', async () => {
+    const trace = await run('#include <stdio.h>\nint main(){int i=0;int a=i++&&i;int b=(i++,i);printf("%d %d %d\\n",a,b,i);return 0;}');
+    expect(trace.status).toBe('completed');
+    expect(trace.output).toBe('0 2 2\n');
+  });
+
+  it('拒绝不满足操作数类型约束的表达式', async () => {
+    const shift = await run('int main(){return 1.0<<1;}');
+    expect(shift.status).toBe('error');
+    expect(shift.error).toContain('只适用于整数');
+
+    const dereference = await run('int main(){int value=1;return *value;}');
+    expect(dereference.status).toBe('error');
+    expect(dereference.error).toContain('解引用运算需要指针');
+
+    const relation = await run('int main(){int *p=0;return p<1;}');
+    expect(relation.status).toBe('error');
+    expect(relation.error).toContain('关系运算中的两个操作数必须都是指针');
   });
 
   it('语法错误带行号', async () => {

@@ -132,7 +132,7 @@ export function callNative(interp: Interpreter, name: string, args: { type: Type
     case 'scanf': return { value: scan(interp, args, interp.scanInput(), true) };
     case 'sscanf': return { value: scan(interp, args.slice(1), interp.readRawString(args[0]?.value ?? 0)) };
     case 'malloc': return { value: interp.heapAllocate(Math.max(1, args[0]?.value ?? 0), `malloc(${args[0]?.value ?? 0})`) };
-    case 'calloc': return { value: interp.heapAllocate(Math.max(0, (args[0]?.value ?? 0) * (args[1]?.value ?? 0)), `calloc(${args[0]?.value ?? 0}, ${args[1]?.value ?? 0})`) };
+    case 'calloc': return { value: interp.heapAllocate(Math.max(0, (args[0]?.value ?? 0) * (args[1]?.value ?? 0)), `calloc(${args[0]?.value ?? 0}, ${args[1]?.value ?? 0})`, true) };
     case 'free': {
       const address = args[0]?.value ?? 0;
       if (address === 0) return { value: 0 };

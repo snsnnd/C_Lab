@@ -28,6 +28,7 @@ export interface VarDecl {
   type: Type;
   storage: StorageClass;
   init?: Initializer;
+  readonly?: boolean;
   line: number;
 }
 
@@ -210,28 +211,29 @@ export class Parser {
 
   /* ---------- Specifiers ---------- */
 
-  private parseDeclarationSpecifier(node: Node): { base: Type; storage: StorageClass } {
+  private parseDeclarationSpecifier(node: Node): { base: Type; storage: StorageClass; readonly: boolean } {
     if (node.type === 'type_identifier') {
       const base = node.text === '_Bool' ? this.primitive('_Bool') : this.typedefs.get(node.text);
       if (!base) this.fail(node, `未知的类型名 '${node.text}'`);
-      return { base, storage: 'auto' };
+      return { base, storage: 'auto', readonly: false };
     }
     // A bare primitive type node is the whole type, not a container of children.
     if (node.type === 'primitive_type') {
-      return { base: this.primitive(node.text), storage: 'auto' };
+      return { base: this.primitive(node.text), storage: 'auto', readonly: false };
     }
     if (node.type === 'sized_type_specifier') {
-      return { base: this.sizedType(node), storage: 'auto' };
+      return { base: this.sizedType(node), storage: 'auto', readonly: false };
     }
     // A bare tag specifier is already the whole type; its name child is not a typedef.
     if (node.type === 'struct_specifier' || node.type === 'union_specifier' || node.type === 'enum_specifier') {
       const base = node.type === 'enum_specifier'
         ? this.parseEnum(node)
         : this.parseStruct(node, node.type === 'union_specifier' ? 'union' : 'struct');
-      return { base, storage: 'auto' };
+      return { base, storage: 'auto', readonly: false };
     }
     let base: Type | undefined;
     let storage: StorageClass = 'auto';
+    let readonly = false;
     let signedness: boolean | undefined;
     let longCount = 0;
     let shortCount = 0;
@@ -242,7 +244,7 @@ export class Parser {
       if (base?.kind === 'int' && base.bits === 8) base = intType(8, signedness ?? true);
       else if (base?.kind === 'float' && base.bits === 32) base = longCount ? DOUBLE : FLOAT;
       else if (base?.kind === 'float' && base.bits === 64) base = DOUBLE;
-      else if (longCount) base = intType(64, signedness ?? true);
+      else if (longCount) base = intType(64, signedness ?? true, longCount >= 2 ? 5 : 4);
       else if (shortCount) base = intType(16, signedness ?? true);
       else base = intType(32, signedness ?? true);
       seenType = false;
@@ -254,7 +256,7 @@ export class Parser {
     for (const child of node.namedChildren) {
       switch (child.type) {
         case 'storage_class_specifier': storage = child.text as StorageClass; continue;
-        case 'type_qualifier': continue;
+         case 'type_qualifier': if (child.text === 'const') readonly = true; continue;
         case 'signed': seenType = true; signedness = true; continue;
         case 'unsigned': seenType = true; signedness = false; continue;
         case 'long': seenType = true; longCount++; continue;
@@ -282,7 +284,7 @@ export class Parser {
     }
     apply();
     if (!base) base = INT;
-    return { base, storage };
+     return { base, storage, readonly };
   }
 
   private primitive(text: string): Type {
@@ -302,9 +304,7 @@ export class Parser {
     const has = (name: string) => names.includes(name);
     if (has('char')) return intType(8, !has('unsigned'));
     if (has('short')) return intType(16, !has('unsigned'));
-    if (has('long')) return has('long long') || node.text.includes('long long')
-      ? { kind: 'int', bits: 64, signed: !has('unsigned') }
-      : { kind: 'int', bits: 64, signed: !has('unsigned') };
+    if (has('long')) return intType(64, !has('unsigned'), has('long long') || node.text.includes('long long') ? 5 : 4);
     return intType(32, !has('unsigned'));
   }
 
@@ -449,7 +449,7 @@ export class Parser {
           // applies to both prototypes and definitions, not to local arrays.
           const type = parsed.type.kind === 'array' ? pointerTo(parsed.type.of)
             : parsed.type.kind === 'function' ? pointerTo(parsed.type) : parsed.type;
-          params.push({ name: parsed.name, type });
+           params.push({ name: parsed.name, type, readonly: spec.readonly });
         }
         if (params.length === 1 && params[0].type.kind === 'void' && !params[0].name) params.length = 0;
         // Declarators bind right to left, so the return type is only known once the
@@ -485,7 +485,7 @@ export class Parser {
   }
 
   private parseDeclaration(node: Node): Declaration[] {
-    const { base, storage } = this.parseDeclarationSpecifier(node);
+    const { base, storage, readonly } = this.parseDeclarationSpecifier(node);
     const results: Declaration[] = [];
     const declarators = node.childrenForFieldName('declarator');
     if (declarators.length === 0) return results;
@@ -500,6 +500,7 @@ export class Parser {
       const initializer = isInit
         ? this.parseInitializer(declarator.childForFieldName('value')!)
         : undefined;
+      if (readonly && !initializer) this.fail(node, `const 对象 ${parsed.name} 必须有初始化器`);
       if (parsed.type.kind === 'array' && parsed.type.count === 0 && initializer) {
         if (initializer.kind === 'List') {
           let cursor = 0, count = 0;
@@ -513,6 +514,7 @@ export class Parser {
       }
       results.push({
         kind: 'VarDecl', name: parsed.name, type: parsed.type, storage, init: initializer,
+        readonly,
         line: this.lineOfOffset(declarator.startIndex),
       });
     }
@@ -686,8 +688,8 @@ export class Parser {
         if (Number.isNaN(value)) this.fail(node, `无法识别的数字：${node.text}`);
         if (!floating && !Number.isSafeInteger(value)) this.fail(node, '整数常量超出教学模型的安全整数范围');
         const type: Type = floating ? (suffix === 'f' ? FLOAT : DOUBLE)
-          : suffix.includes('u') ? { kind: 'int', bits: suffix.includes('l') || value > 0xffffffff ? 64 : 32, signed: false }
-            : suffix.includes('l') ? LONG : value <= 0x7fffffff ? INT : hex && value <= 0xffffffff ? UNSIGNED_INT : LONG;
+          : suffix.includes('u') ? intType(suffix.includes('ll') ? 64 : suffix.includes('l') || value > 0xffffffff ? 64 : 32, false, suffix.includes('ll') ? 5 : suffix.includes('l') || value > 0xffffffff ? 4 : undefined)
+            : suffix.includes('ll') ? intType(64, true, 5) : suffix.includes('l') ? LONG : value <= 0x7fffffff ? INT : hex && value <= 0xffffffff ? UNSIGNED_INT : LONG;
         return { kind: 'Num', value, type, line, raw: node.text };
       }
       case 'char_literal': {
